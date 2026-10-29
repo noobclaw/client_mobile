@@ -1,0 +1,45 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      api_base:
+        description: Backend base URL baked into the build
+        required: false
+        default: https://api.noobclaw.com
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14.3'
+      - name: Unit tests
+        run: gradle :app:testDebugUnitTest --stacktrace
+      - name: Assemble
+        env:
+          SCRIPT_PUBKEY: ${{ secrets.SCRIPT_PUBKEY_HEX }}
+          API_BASE: ${{ github.event.inputs.api_base || 'https://api.noobclaw.com' }}
+        run: |
+          gradle :app:assembleDebug -PapiBase="$API_BASE" -PscriptPubKey="$SCRIPT_PUBKEY" --stacktrace
+          if [ -n "$SCRIPT_PUBKEY" ]; then
+            gradle :app:assembleRelease -PapiBase="$API_BASE" -PscriptPubKey="$SCRIPT_PUBKEY" --stacktrace
+          else
+            echo "SCRIPT_PUBKEY_HEX secret not set: skipping release build (release refuses to run unsigned scripts)."
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: noobclaw-mobile-apk
+          path: app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
