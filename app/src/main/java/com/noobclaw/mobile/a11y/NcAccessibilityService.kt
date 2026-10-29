@@ -35,7 +35,8 @@ class NcAccessibilityService : AccessibilityService() {
 
     fun root(): AccessibilityNodeInfo? = rootInActiveWindow
 
-    fun activePackage(): String? = rootInActiveWindow?.packageName?.toString() ?: lastEventPackage
+    /** Package of the window in front; null (= blocked by the guard) when it cannot be read. */
+    fun activePackage(): String? = rootInActiveWindow?.packageName?.toString()
 
     /** Dispatches a gesture and suspends until the system reports completion or cancellation. */
     suspend fun gesture(path: Path, durationMs: Long): Boolean = suspendCancellableCoroutine { cont ->

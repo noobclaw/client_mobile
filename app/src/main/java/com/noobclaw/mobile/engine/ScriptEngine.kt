@@ -13,6 +13,7 @@ import com.noobclaw.mobile.util.RunLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
 
 /** A verified script pack as delivered by GET /api/mobile/scenarios/:id. */
@@ -81,7 +82,7 @@ class ScriptEngine(
     suspend fun run(): JSONObject {
         val quickJs = QuickJs.create(Dispatchers.Default)
         try {
-            quickJs.evaluationTimeoutMillis = caps.maxRunMs + 60_000
+            quickJs.evaluationTimeoutMillis = caps.maxRunMs + 10 * 60_000 // scripts stop themselves at maxRunMs; this is the backstop
             quickJs.asyncFunction("__nc_call") { args ->
                 val name = args.getOrNull(0) as? String ?: ""
                 val argJson = args.getOrNull(1) as? String ?: "null"
@@ -91,9 +92,11 @@ class ScriptEngine(
                 append(prelude())
                 append("\n")
                 append(pack.code)
-                append("\n;(async () => JSON.stringify((await main(ctx)) ?? null))()")
+                // Top-level await: quickjs-kt returns the completion value, not a Promise wrapper.
+                append("\n;JSON.stringify((await main(ctx)) ?? null)")
             }
-            val raw = quickJs.evaluate<String>(source, "${pack.id}.js")
+            // evaluationTimeoutMillis only counts JS execution, not awaited bridge calls: enforce wall time here.
+            val raw = withTimeout(caps.maxRunMs + 10 * 60_000) { quickJs.evaluate<String>(source, "${pack.id}.js") }
             val result = runCatching { JSONObject(raw) }.getOrElse { JSONObject().put("value", raw) }
             return result.put("counts", counts).put("targets", targets)
         } finally {
@@ -132,7 +135,7 @@ const ctx = Object.freeze({
   input: (handle, text) => __call('input', { handle, text }),
   back: () => __call('back'),
   scroll: (handle, forward) => __call('scroll', { handle, forward: forward !== false }),
-  imeEnter: (handle) => __call('imeEnter', { handle }),
+  imeEnter: (handle, final) => __call('imeEnter', { handle, final: !!final }),
   openUrl: (url) => __call('openUrl', { url: String(url) }),
   quota: (bucket) => __call('quota', { bucket }),
   state: Object.freeze({
@@ -170,7 +173,12 @@ const ctx = Object.freeze({
     private fun ok(v: Any?) = JSONObject().put("v", v ?: JSONObject.NULL).toString()
 
     /** Every ctx call lands here. Returns a JSON string; failures are encoded, never thrown into JS. */
-    private suspend fun dispatch(name: String, argJson: String): String {
+    private val bridgeLock = kotlinx.coroutines.sync.Mutex()
+
+    /** One bridge call at a time, even if a script fires several without awaiting (state below is not thread-safe). */
+    private suspend fun dispatch(name: String, argJson: String): String = bridgeLock.withLock { dispatchLocked(name, argJson) }
+
+    private suspend fun dispatchLocked(name: String, argJson: String): String {
         val a = runCatching { if (argJson == "null") JSONObject() else JSONObject(argJson) }.getOrElse { JSONObject() }
         return try {
             when (name) {
@@ -214,6 +222,8 @@ const ctx = Object.freeze({
                 }
                 "imeEnter" -> {
                     if (abortRequested) return err("aborted", "aborted")
+                    // An Enter that sends something (a comment) is a final action: skipped in dry runs.
+                    if (dryRun && a.optBoolean("final", false)) return ok(JSONObject().put("dry", true))
                     governor.acquire()
                     ok(ui.imeEnter(a.optInt("handle")))
                 }
@@ -329,12 +339,14 @@ const ctx = Object.freeze({
             this.used[bucket] = used + 1
             return JSONObject().put("ok", true).put("dry", true).put("charged", 0)
         }
-        val key = "$runId:$action:${ref.take(120)}"
+        // The action already happened on screen: it counts against the cap whatever the billing result.
+        this.used[bucket] = used + 1
+        val refHash = java.security.MessageDigest.getInstance("SHA-256").digest(ref.toByteArray()).joinToString("") { "%02x".format(it) }.take(32)
+        val key = "$runId:$action:$refHash"
         var last: Exception? = null
         for (attempt in 1..3) {
             try {
                 val r = Api.chargeAction(action, "tiktok", ref, key, pack.version)
-                this.used[bucket] = used + 1
                 return JSONObject().put("ok", r.optBoolean("ok", true)).put("charged", r.optInt("charged", 0))
             } catch (e: com.noobclaw.mobile.net.ApiException) {
                 if (e.status == 402) return JSONObject().put("ok", false).put("reason", "insufficient_balance")

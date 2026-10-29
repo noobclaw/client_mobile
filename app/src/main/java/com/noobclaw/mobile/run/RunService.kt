@@ -37,7 +37,7 @@ class RunService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var loop: Job? = null
-    private var currentRun: Job? = null
+    @Volatile private var currentRun: Job? = null
     @Volatile private var engine: ScriptEngine? = null
     private var overlay: FloatingStop? = null
 
@@ -46,13 +46,17 @@ class RunService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startInForeground(getString(R.string.app_name) + " · 待命中")
         when (intent?.action) {
-            ACTION_STOP_RUN -> stopCurrentRun("user_stopped")
+            ACTION_STOP_RUN -> {
+                if (currentRun?.isActive == true) stopCurrentRun("user_stopped")
+                else if (!autostart()) { stopSelf(); return START_NOT_STICKY }
+            }
             ACTION_RUN_NOW -> startRun(slotKey = "manual-" + System.currentTimeMillis(), dryRun = false)
             ACTION_DRY_RUN -> startRun(slotKey = "dry-" + System.currentTimeMillis(), dryRun = true)
             ACTION_SHUTDOWN -> { stopCurrentRun("service_shutdown"); stopSelf(); return START_NOT_STICKY }
         }
-        if (loop == null) loop = scope.launch { mainLoop() }
-        return START_STICKY
+        // The scheduler only runs when the user switched automation on; a manual run / stop does not turn it on.
+        if (loop == null && autostart()) loop = scope.launch { mainLoop() }
+        return if (autostart()) START_STICKY else START_NOT_STICKY
     }
 
     override fun onDestroy() {
@@ -75,12 +79,15 @@ class RunService : Service() {
             .setContentTitle(getString(R.string.app_name))
             .setContentText(text)
             .setOngoing(true)
+            .addAction(0, "停止", android.app.PendingIntent.getService(
+                this, 1, Intent(this, RunService::class.java).setAction(ACTION_STOP_RUN),
+                android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT))
             .build()
 
     private suspend fun mainLoop() {
         while (scope.isActive) {
             runCatching { heartbeat() }.onFailure { RunLog.w("心跳失敗：${it.message}") }
-            runCatching { refreshTaskAndMaybeRun() }.onFailure { RunLog.w("拉取任務失敗：${it.message}") }
+            runCatching { refreshTaskAndMaybeRun() }.onFailure { RunLog.w("排程檢查失敗：${it.message}") }
             runCatching { uploadLogs() }
             delay(HEARTBEAT_MS)
         }
@@ -89,6 +96,15 @@ class RunService : Service() {
     private suspend fun heartbeat() {
         if (Prefs.token.isEmpty()) return
         val tk = targetAppInfo()
+        try { sendHeartbeat(tk) } catch (e: com.noobclaw.mobile.net.ApiException) {
+            // Registration at login can fail after the token was saved: register again and retry once.
+            if (e.code != "device_not_registered") throw e
+            Api.registerDevice(JSONObject().put("vendor", Build.MANUFACTURER + "/" + Build.MODEL).put("android_sdk", Build.VERSION.SDK_INT))
+            sendHeartbeat(tk)
+        }
+    }
+
+    private suspend fun sendHeartbeat(tk: Pair<String, Long>?) {
         Api.heartbeat(
             JSONObject()
                 .put("app_ver", com.noobclaw.mobile.BuildConfig.VERSION_NAME)
@@ -111,8 +127,11 @@ class RunService : Service() {
 
     private suspend fun refreshTaskAndMaybeRun() {
         if (Prefs.token.isEmpty()) return
-        val r = Api.fetchTask()
-        val task = r.optJSONObject("task") ?: return
+        // Offline: keep using the last task we got, so a network blip does not skip a slot.
+        val task = runCatching { Api.fetchTask().optJSONObject("task") }.getOrElse {
+            RunLog.w("拉取任務失敗，用本地緩存：${it.message}")
+            runCatching { JSONObject(Prefs.taskJson) }.getOrNull()
+        } ?: return
         Prefs.taskJson = task.toString()
         if (currentRun?.isActive == true) return
         val due = Schedule.due(task, ZonedDateTime.now(), doneSlots()) ?: return
@@ -128,7 +147,8 @@ class RunService : Service() {
     private fun stopCurrentRun(reason: String) {
         engine?.abortRequested = true
         RunLog.i("停止：$reason")
-        scope.launch { delay(3000); currentRun?.cancel() } // FR-10: everything stops within 3 s
+        val job = currentRun
+        scope.launch { delay(3000); job?.cancel() } // FR-10: everything stops within 3 s (only the run being stopped)
     }
 
     private suspend fun runOnce(slotKey: String, dryRun: Boolean) {
@@ -151,7 +171,7 @@ class RunService : Service() {
             engine = e
             val result = e.run()
             report.put("status", result.optString("status", "done")).put("result", result)
-            handleChallenge(result, runId)
+            handleChallenge(result, runId, dryRun)
             RunLog.i("運行結束：${result.optString("status", "done")} ${result.optString("reason")}", runId)
         } catch (e: ScriptLoader.Rejected) {
             report.put("status", "rejected").put("reason", e.reason)
@@ -165,8 +185,10 @@ class RunService : Service() {
             engine = null
             overlay?.hide(); overlay = null
             report.put("duration_ms", System.currentTimeMillis() - started)
-            scope.launch { runCatching { Api.reportRun(report) } }
-            startInForeground(getString(R.string.app_name) + " · 待命中")
+            // NonCancellable: the report still goes out when the run was cancelled or the service is stopping.
+            kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) { runCatching { Api.reportRun(report) } }
+            if (autostart()) startInForeground(getString(R.string.app_name) + " · 待命中")
+            else stopSelf() // a manual run with automation off: nothing to stand by for
         }
     }
 
@@ -182,7 +204,7 @@ class RunService : Service() {
     }
 
     /** FR-08: per-kind cooldown, never shorter than the desktop manifest values; FR-18 notification. */
-    private suspend fun handleChallenge(result: JSONObject, runId: String) {
+    private suspend fun handleChallenge(result: JSONObject, runId: String, dryRun: Boolean) {
         val kind = result.optString("challenge")
         if (kind.isEmpty()) return
         val hours = when (kind) {
@@ -193,7 +215,7 @@ class RunService : Service() {
         }
         Prefs.cooldownUntil = System.currentTimeMillis() + hours * 3600_000
         RunLog.w("遇到平台驗證（$kind），已停止，冷卻 $hours 小時。請在這台手機上手動處理。", runId)
-        runCatching { Api.notify("challenge:$kind", "TikTok 出現驗證（$kind），任務已停止並冷卻 $hours 小時，請在這台雲手機上手動處理。") }
+        if (!dryRun) runCatching { Api.notify("challenge:$kind", "TikTok 出現驗證（$kind），任務已停止並冷卻 $hours 小時，請在這台雲手機上手動處理。") }
     }
 
     private fun targetAppInfo(): Pair<String, Long>? {
@@ -203,6 +225,9 @@ class RunService : Service() {
         }
         return null
     }
+
+    private fun autostart(): Boolean =
+        getSharedPreferences("nc_mobile", Context.MODE_PRIVATE).getBoolean("autostart", false)
 
     private fun doneSlots(): Set<String> =
         getSharedPreferences("nc_slots", Context.MODE_PRIVATE).getStringSet("done", emptySet()) ?: emptySet()

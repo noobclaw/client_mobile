@@ -11,7 +11,7 @@ Done (code, not yet run on a device):
 
 Before a public release:
 - [ ] Verify every selector on a device (docs/TIKTOK_SELECTORS.md).
-- [ ] Confirm quickjs-kt 1.0.15 API (`asyncFunction`, promise result of `evaluate`) in CI.
+- [ ] First CI build: quickjs-kt 1.0.15 is built with Kotlin 2.4.10 / AGP 9.4 — app uses Kotlin 2.4.10 with AGP 8.7.3; bump AGP if the AAR demands it.
 - [ ] Token → EncryptedSharedPreferences.
 - [ ] Generate the signing key, set `SCRIPT_PUBKEY_HEX`, sign both scripts.
 - [ ] Real release keystore in CI.

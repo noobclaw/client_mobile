@@ -10,12 +10,16 @@ import org.json.JSONObject
 /**
  * Screen reading and input on top of [NcAccessibilityService].
  *
- * Node handles: every [find] call snapshots the matched nodes and returns integer handles that stay
- * valid until the next [find]/[dumpTree]. Scripts never get raw node objects.
+ * Node handles: [find] / [descendants] return integer handles for the matched nodes; the last
+ * [MAX_HANDLES] handles stay valid. Scripts never get raw node objects.
  */
 class UiOps(private val svc: () -> NcAccessibilityService?) {
 
-    private val handles = HashMap<Int, AccessibilityNodeInfo>()
+    // Handles stay valid across find() calls (a script may check for a challenge between reading a row and tapping it).
+    // Oldest entries are dropped past MAX_HANDLES; a dropped handle fails with stale_handle.
+    private val handles = object : LinkedHashMap<Int, AccessibilityNodeInfo>() {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, AccessibilityNodeInfo>?) = size > MAX_HANDLES
+    }
     private var nextHandle = 1
 
     private fun service(): NcAccessibilityService =
@@ -80,7 +84,6 @@ class UiOps(private val svc: () -> NcAccessibilityService?) {
 
     /** Breadth-first search of the active window. Returns node descriptors with handles. */
     fun find(q: Query): JSONArray {
-        handles.clear()
         val out = JSONArray()
         val root = service().root() ?: return out
         // Never read other apps' screens, even if the system hands us their window.
@@ -213,7 +216,7 @@ class UiOps(private val svc: () -> NcAccessibilityService?) {
         return n.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
     }
 
-    fun back(): Boolean = service().performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK)
+    fun back(): Boolean = guard().let { service() }.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK)
 
     /**
      * Compact, redacted tree for diagnostics (FR-12). Editable text is masked and only target-app
@@ -248,4 +251,6 @@ class UiOps(private val svc: () -> NcAccessibilityService?) {
         }
         return JSONObject().put("package", pkg).put("root", walk(root, 0)).put("nodes", count)
     }
+
+    companion object { const val MAX_HANDLES = 5000 }
 }

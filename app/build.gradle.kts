@@ -20,7 +20,7 @@ android {
         // Ed25519 public key (hex, 32 bytes) used to verify script packs. The private key is
         // kept offline (see docs/SCRIPT_SIGNING.md). Placeholder until the release key is generated.
         buildConfigField("String", "SCRIPT_PUBKEY_HEX", "\"${project.findProperty("scriptPubKey") ?: ""}\"")
-        ndk { abiFilters += listOf("arm64-v8a") }
+        ndk { abiFilters += listOf("arm64-v8a", "x86_64") } // x86_64: some cloud phones / emulators
     }
 
     buildTypes {
@@ -37,9 +37,12 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions { jvmTarget = "17" }
 
     testOptions { unitTests.isReturnDefaultValues = true }
+}
+
+kotlin {
+    compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) }
 }
 
 dependencies {
