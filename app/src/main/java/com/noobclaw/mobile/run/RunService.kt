@@ -30,7 +30,7 @@ import java.time.ZonedDateTime
 import java.util.UUID
 
 /**
- * Long-lived foreground service: heartbeat every 60 s (FR-13), task refresh on each heartbeat (FR-09),
+ * Long-lived foreground service: heartbeat every 15 s (desktop commands arrive within ~15 s), task list refresh every 60 s (FR-09),
  * and the scheduled runs themselves. One run at a time.
  */
 class RunService : Service() {
@@ -92,9 +92,13 @@ class RunService : Service() {
             .build()
 
     private suspend fun mainLoop() {
+        var tick = 0
         while (scope.isActive) {
             runCatching { heartbeat() }.onFailure { RunLog.w("心跳失敗：${it.message}") }
-            runCatching { refreshTaskAndMaybeRun() }.onFailure { RunLog.w("排程檢查失敗：${it.message}") }
+            // Task list from the server every 4th tick (60 s); schedule check every tick on the cached list.
+            val fetch = tick % TASK_REFRESH_TICKS == 0
+            tick++
+            runCatching { refreshTaskAndMaybeRun(fetch) }.onFailure { RunLog.w("排程檢查失敗：${it.message}") }
             runCatching { uploadLogs() }
             delay(HEARTBEAT_MS)
         }
@@ -147,10 +151,10 @@ class RunService : Service() {
         runCatching { Api.uploadLogs(json) }.onFailure { RunLog.restore(batch) }
     }
 
-    private suspend fun refreshTaskAndMaybeRun() {
+    private suspend fun refreshTaskAndMaybeRun(fetch: Boolean = true) {
         if (Prefs.token.isEmpty()) return
         // Offline: keep using the last list we got, so a network blip does not skip a slot.
-        runCatching { Api.fetchTasks().optJSONArray("tasks") }.onSuccess { if (it != null) Prefs.tasksJson = it.toString() }
+        if (fetch) runCatching { Api.fetchTasks().optJSONArray("tasks") }.onSuccess { if (it != null) Prefs.tasksJson = it.toString() }
             .onFailure { RunLog.w("拉取任務失敗，用本地緩存：${it.message}") }
         if (currentRun?.isActive == true) return
         // One run at a time: the first due task runs now, the next one on a later heartbeat (catch-up window 2 h).
@@ -308,7 +312,8 @@ class RunService : Service() {
     companion object {
         const val CONSENT_VERSION = 1
         const val NOTIF_ID = 42
-        const val HEARTBEAT_MS = 60_000L
+        const val HEARTBEAT_MS = 15_000L
+        const val TASK_REFRESH_TICKS = 4
         const val ACTION_RUN_NOW = "com.noobclaw.mobile.RUN_NOW"
         const val ACTION_DRY_RUN = "com.noobclaw.mobile.DRY_RUN"
         const val ACTION_STOP_RUN = "com.noobclaw.mobile.STOP_RUN"
