@@ -25,14 +25,16 @@ object Schedule {
     }
 
     /** Returns the slot that should run now, or null. [done] holds keys of slots already run. */
-    fun due(task: JSONObject, now: ZonedDateTime, done: Set<String>): Due? {
+    fun due(task: JSONObject, now: ZonedDateTime, done: Set<String>, suffix: String = ""): Due? {
         if (!task.optBoolean("enabled", false)) return null
         val local = now.withZoneSameInstant(zone(task))
         val today: LocalDate = local.toLocalDate()
         for (slot in slots(task)) {
             val at = ZonedDateTime.of(today, slot, local.zone)
-            val key = "$today@$slot"
+            val key = "$today@$slot$suffix"   // suffix "#taskId": each task has its own slots
             if (key in done) continue
+            // Keys written by apps before the task list had no suffix; they belong to the single old task ("default").
+            if (suffix == "#default" && "$today@$slot" in done) continue
             val lateMin = java.time.Duration.between(at, local).toMinutes()
             if (lateMin in 0..CATCH_UP_MINUTES) return Due(key)
         }

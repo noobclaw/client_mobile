@@ -140,9 +140,8 @@ class RunService : Service() {
         if (currentRun?.isActive == true) return
         // One run at a time: the first due task runs now, the next one on a later heartbeat (catch-up window 2 h).
         for (task in Prefs.tasks()) {
-            val due = Schedule.due(task, ZonedDateTime.now(), doneSlots()) ?: continue
-            val key = due.slotKey + "#" + task.optString("id")
-            if (key in doneSlots()) continue
+            val due = Schedule.due(task, ZonedDateTime.now(), doneSlots(), "#" + task.optString("id")) ?: continue
+            val key = due.slotKey
             markSlotDone(key) // mark first: a crash mid-run never re-runs the same slot
             startRun(key, dryRun = false, taskId = task.optString("id"))
             return
@@ -168,7 +167,8 @@ class RunService : Service() {
         try {
             val pre = preconditions()
             if (pre != null) { report.put("status", "skipped").put("reason", pre); RunLog.w("跳過運行：$pre", runId); return }
-            val task = Prefs.tasks().firstOrNull { it.optString("id") == taskId } ?: Prefs.tasks().firstOrNull()
+            // A task deleted in the meantime is skipped, never swapped for another one.
+            val task = (if (taskId == null) Prefs.tasks().firstOrNull() else Prefs.tasks().firstOrNull { it.optString("id") == taskId })
                 ?: run { report.put("status", "skipped").put("reason", "no_task"); RunLog.w("跳過運行：沒有任務", runId); return }
             runningTaskId = task.optString("id")
             report.put("task_id", runningTaskId)
