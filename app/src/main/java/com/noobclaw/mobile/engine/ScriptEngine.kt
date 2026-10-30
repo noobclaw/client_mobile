@@ -66,7 +66,7 @@ class ScriptEngine(
     private val appCtx: Context,
     private val pack: ScriptPack,
     private val task: JSONObject,
-    private val binding: JSONObject,
+    private var binding: JSONObject,
     private val dryRun: Boolean,
     private val runId: String,
 ) {
@@ -165,6 +165,8 @@ const ctx = Object.freeze({
   setActionTargets: (t) => __call('targets', t || {}),
   notify: (kind, msg) => __call('notify', { kind, msg: String(msg) }),
   dumpTree: () => __call('dumpTree'),
+  // The TikTok account logged in on this phone, read by the script from the profile page. No manual binding.
+  setAccount: (handle) => __call('setAccount', { handle: String(handle || '') }),
 });
 """
     }
@@ -316,6 +318,21 @@ const ctx = Object.freeze({
                     ok(true)
                 }
                 "dumpTree" -> ok(ui.dumpTree())
+                "setAccount" -> {
+                    val h = a.optString("handle").trim().removePrefix("@").lowercase()
+                    if (!Regex("^[a-z0-9._]{2,24}$").matches(h)) return err("bad_handle", "bad_handle")
+                    val b = JSONObject().put("platform", "tiktok").put("platform_uid", h).put("display_id", "@$h")
+                    if (binding.optString("platform_uid") != h) {
+                        // One phone = one TikTok account: register it silently (server keeps it to one NoobClaw account).
+                        try { Api.bindPlatform(JSONObject(b.toString())) } catch (e: com.noobclaw.mobile.net.ApiException) {
+                            if (e.status == 409) return err("platform_account_taken", "platform_account_taken")
+                            throw e
+                        }
+                        com.noobclaw.mobile.util.Prefs.bindingJson = b.toString()
+                    }
+                    binding = b
+                    ok(true)
+                }
                 else -> err("unknown_call:$name", "unknown_call")
             }
         } catch (e: A11yGuard.Blocked) {

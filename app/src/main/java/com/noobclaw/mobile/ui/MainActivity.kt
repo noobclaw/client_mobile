@@ -31,7 +31,7 @@ import java.time.ZoneId
 
 /**
  * Single-activity UI built in code (no XML) to keep the MVP small:
- * login → disclosure/consent → permissions, platform binding, task settings, controls, log.
+ * login → disclosure/consent → permissions, task settings, controls, log.
  */
 class MainActivity : AppCompatActivity() {
 
@@ -125,7 +125,6 @@ class MainActivity : AppCompatActivity() {
     private fun renderMain() {
         title("這台手機")
         renderPermissions()
-        renderBinding()
         renderTask()
         renderControls()
         title("運行日誌")
@@ -147,31 +146,6 @@ class MainActivity : AppCompatActivity() {
         label((if (battery) "✅" else "❌") + " 關閉電池優化（避免後台被殺）")
         if (!battery) button("去關閉電池優化") {
             startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
-        }
-    }
-
-    private fun renderBinding() {
-        title("綁定 TikTok 帳號")
-        val b = runCatching { JSONObject(Prefs.bindingJson) }.getOrNull()
-        if (b != null) label("已綁定：${b.optString("display_id")}（每次運行前會核對當前登錄的是不是這個號）")
-        val handle = field("TikTok 用戶名，例如 @myshop", b?.optString("display_id").orEmpty())
-        val lang = field("這個號的內容語言（en / ja / es / id / th / vi / pt / zh ...）", b?.optString("content_lang") ?: "en")
-        button(if (b == null) "綁定" else "更新綁定") {
-            val h = handle.text.toString().trim().removePrefix("@")
-            if (!Regex("^[A-Za-z0-9._]{2,24}$").matches(h)) { toast("用戶名格式不對"); return@button }
-            val binding = JSONObject()
-                .put("platform", "tiktok")
-                .put("platform_uid", h.lowercase())   // MVP: handle; switch to the immutable id once Phase 0 finds it
-                .put("display_id", "@$h")
-                .put("content_lang", lang.text.toString().trim().ifEmpty { "en" })
-            lifecycleScope.launch {
-                try {
-                    Api.bindPlatform(JSONObject(binding.toString()))
-                    Prefs.bindingJson = binding.toString()
-                    toast("已綁定 @$h")
-                    render()
-                } catch (e: Exception) { toast("綁定失敗：${e.message}") }
-            }
         }
     }
 

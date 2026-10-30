@@ -163,7 +163,7 @@ class RunService : Service() {
             val pre = preconditions()
             if (pre != null) { report.put("status", "skipped").put("reason", pre); RunLog.w("跳過運行：$pre", runId); return }
             val task = JSONObject(Prefs.taskJson)
-            val binding = JSONObject(Prefs.bindingJson)
+            val binding = runCatching { JSONObject(Prefs.bindingJson) }.getOrElse { JSONObject() } // filled by the script (setAccount)
             report.put("late_sec", Schedule.lateSeconds(task, slotKey, ZonedDateTime.now()))
             val (pkg, ver) = targetAppInfo() ?: run { report.put("status", "skipped").put("reason", "app_not_installed"); return }
             RunLog.i("開始運行（${if (dryRun) "乾跑" else "正式"}）· $pkg v$ver", runId)
@@ -226,7 +226,6 @@ class RunService : Service() {
         if (Prefs.token.isEmpty()) return "not_logged_in"
         if (Prefs.consentVersion < CONSENT_VERSION) return "consent_required"
         if (!NcAccessibilityService.isRunning) return "a11y_disabled"
-        if (Prefs.bindingJson.isEmpty()) return "platform_account_not_bound"
         if (Prefs.taskJson.isEmpty()) return "no_task"
         if (System.currentTimeMillis() < Prefs.cooldownUntil) return "cooldown"
         return null
