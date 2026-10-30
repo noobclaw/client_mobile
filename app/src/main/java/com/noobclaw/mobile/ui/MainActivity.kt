@@ -72,6 +72,8 @@ class MainActivity : AppCompatActivity() {
         root = ui.col().apply { setPadding(ui.dp(20), ui.dp(24), ui.dp(20), ui.dp(40)) }
         scroll = ScrollView(this).apply { setBackgroundColor(C.BG); isFillViewport = true; addView(root) }
         setContentView(scroll)
+        // The page shrinks above the keyboard (so nothing hides behind it).
+        window.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         if (Build.VERSION.SDK_INT >= 33) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
@@ -131,7 +133,25 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun go(s: Screen) { screen = s; render(); scroll.scrollTo(0, 0) }
+    private fun go(s: Screen) { hideKeyboard(); screen = s; render(); scroll.scrollTo(0, 0) }
+
+    private fun hideKeyboard() {
+        val f = currentFocus ?: return
+        getSystemService(android.view.inputmethod.InputMethodManager::class.java)?.hideSoftInputFromWindow(f.windowToken, 0)
+        f.clearFocus()
+    }
+
+    /** Tapping anywhere outside the text box closes the keyboard (Android does not do this by itself). */
+    override fun dispatchTouchEvent(ev: android.view.MotionEvent): Boolean {
+        if (ev.action == android.view.MotionEvent.ACTION_DOWN) {
+            val f = currentFocus
+            if (f is EditText) {
+                val r = android.graphics.Rect(); f.getGlobalVisibleRect(r)
+                if (!r.contains(ev.rawX.toInt(), ev.rawY.toInt())) hideKeyboard()
+            }
+        }
+        return super.dispatchTouchEvent(ev)
+    }
     private fun toast(t: String) = Toast.makeText(this, t, Toast.LENGTH_LONG).show()
     private fun add(v: View, top: Int = 0, bottom: Int = 0) = root.addView(v, ui.lp(top = top, bottom = bottom))
 
