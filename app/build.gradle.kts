@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "com.noobclaw.mobile"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.noobclaw.mobile"
