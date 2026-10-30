@@ -11,6 +11,9 @@ on:
         required: false
         default: https://api.noobclaw.com
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-24.04   # has the Android SDK preinstalled (ANDROID_HOME)
@@ -57,3 +60,13 @@ jobs:
           name: noobclaw-mobile-apk
           path: app/build/outputs/apk/**/*.apk
           if-no-files-found: error
+      # Plain .apk download for testers (no zip): a moving "debug-latest" pre-release, updated on every push to main.
+      - name: Publish debug-latest
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk noobclaw-mobile-debug.apk
+          gh release delete debug-latest --yes --cleanup-tag || true
+          gh release create debug-latest noobclaw-mobile-debug.apk --prerelease --title "Debug build (latest main)" \
+            --notes "Debug build of ${GITHUB_SHA}. Test devices only: runs unsigned test scripts."
