@@ -295,7 +295,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun logout() {
-        Prefs.logout(); RunService.start(this, RunService.ACTION_SHUTDOWN); balance = null; screen = Screen.HOME; render()
+        Prefs.logout(); RunService.start(this, RunService.ACTION_SHUTDOWN); balance = null; balanceAt = 0L; balanceFailed = false; screen = Screen.HOME; render()
     }
 
     // ---------- permissions ----------
@@ -468,12 +468,12 @@ class MainActivity : AppCompatActivity() {
         // profile
         val prof = ui.card()
         val pr = ui.row()
-        val who = Prefs.account.ifEmpty { Prefs.wallet.take(6) + "…" + Prefs.wallet.takeLast(4) }
+        val who = Prefs.account.ifEmpty { if (Prefs.wallet.length > 10) Prefs.wallet.take(6) + "…" + Prefs.wallet.takeLast(4) else Prefs.wallet.ifEmpty { "NoobClaw" } }
         pr.addView(ui.badge(who.take(1).uppercase(), C.PURPLE, Color.WHITE, 52))
         val pt = ui.col().apply { setPadding(ui.dp(14), 0, 0, 0) }
         pt.addView(ui.text(who, 17f, C.TEXT, true))
         val b = balance
-        pt.addView(ui.sub(if (b == null) tr("加載中…", "Loading…") else planLabel(b)))
+        pt.addView(ui.sub(if (b != null) planLabel(b) else if (balanceFailed) "—" else tr("加載中…", "Loading…")))
         pr.addView(pt, ui.weight())
         prof.addView(pr)
         add(prof, bottom = 12)
@@ -490,7 +490,7 @@ class MainActivity : AppCompatActivity() {
         stat(if (Prefs.phoneLimit > 0) "${Prefs.phoneLimit}" else "—", tr("可用手機", "Phones allowed"))
         stat(b?.let { expiryText(it) } ?: "—", tr("會員到期", "Plan ends"), last = true)
         add(stats, bottom = 18)
-        if (balance == null) loadBalance()
+        if (System.currentTimeMillis() - balanceAt > 60_000) loadBalance()
 
         // settings list
         val list = ui.card().apply { setPadding(ui.dp(16), ui.dp(4), ui.dp(16), ui.dp(4)) }
@@ -522,14 +522,21 @@ class MainActivity : AppCompatActivity() {
         "basic" -> tr("基礎版", "Basic"); "pro" -> tr("進階版", "Pro"); "max" -> tr("旗艦版", "Max"); "ultra" -> tr("至尊版", "Ultra")
         else -> tr("免費版", "Free")
     }
+    private fun str(b: JSONObject, k: String) = b.optString(k).takeIf { it.isNotEmpty() && it != "null" }
+    /** Membership state from the subscription period (subStatus + subPeriodEnd), not the monthly credit bucket. */
     private fun planLabel(b: JSONObject): String {
-        val active = b.optBoolean("subActive")
-        val code = if (active) b.optString("planCode", "free") else (b.optString("subPlanCode").takeIf { it.isNotEmpty() && it != "null" } ?: "free")
-        return if (!active && code != "free") planName(code) + " · " + tr("已過期", "expired") else planName(if (active) code else "free")
+        val end = str(b, "subPeriodEnd")?.let { runCatching { java.time.OffsetDateTime.parse(it).toInstant() }.getOrNull() }
+        val active = str(b, "subStatus") == "active" && end != null && end.isAfter(java.time.Instant.now())
+        val subCode = str(b, "subPlanCode")
+        return when {
+            active -> planName(subCode ?: str(b, "planCode") ?: "free")
+            subCode != null && subCode != "free" -> planName(subCode) + " · " + tr("已過期", "expired")
+            else -> planName("free")
+        }
     }
     private fun expiryText(b: JSONObject): String {
         val end = b.optString("subPeriodEnd").takeIf { it.isNotEmpty() && it != "null" } ?: return "—"
-        return runCatching { java.time.OffsetDateTime.parse(end).toLocalDate().toString() }.getOrElse { end.take(10) }
+        return runCatching { java.time.OffsetDateTime.parse(end).atZoneSameInstant(ZoneId.systemDefault()).toLocalDate().toString() }.getOrElse { end.take(10) }
     }
     private fun fmtCredits(n: Long): String = when {
         n >= 1_000_000 -> String.format(java.util.Locale.US, "%.1fM", n / 1_000_000.0)
@@ -537,13 +544,20 @@ class MainActivity : AppCompatActivity() {
         else -> n.toString()
     }
     private var balanceLoading = false
+    private var balanceAt = 0L
+    private var balanceFailed = false
     private fun loadBalance() {
         if (balanceLoading) return
         balanceLoading = true
+        val token = Prefs.token
         lifecycleScope.launch {
-            runCatching { Api.get("/api/ai/balance") }
-                .onSuccess { balance = it; if (screen == Screen.ME) render() }
+            // peek=1: read-only (doesn't consume the desktop's commission notices)
+            val r = runCatching { Api.get("/api/ai/balance?peek=1") }
             balanceLoading = false
+            if (Prefs.token != token) return@launch // logged out / switched account meanwhile
+            r.onSuccess { balance = it; balanceFailed = false }.onFailure { balanceFailed = true }
+            balanceAt = System.currentTimeMillis()
+            if (screen == Screen.ME) render()
         }
     }
 
@@ -729,7 +743,9 @@ class MainActivity : AppCompatActivity() {
                     .put("leads_per_run", lv.leads)
                     .put("lead_do_like", true).put("lead_do_follow", true).put("lead_do_comment", true)
             }
-            val name = d.optString("name").ifEmpty { s.title() + " · " + items.first().removePrefix("https://www.tiktok.com/").take(20) }
+            // 默認名照舊用繁體劇本名(跟之前存到服務器的一致,電腦端也按它顯示)
+            val baseName = if (cl) "評論區點讚" else "定向獲客"
+            val name = d.optString("name").ifEmpty { baseName + " · " + items.first().removePrefix("https://www.tiktok.com/").take(20) }
             return JSONObject()
                 .put("id", d.optString("id").ifEmpty { "t" + System.currentTimeMillis().toString(36) })
                 .put("name", name).put("script_id", script).put("config", cfg)
