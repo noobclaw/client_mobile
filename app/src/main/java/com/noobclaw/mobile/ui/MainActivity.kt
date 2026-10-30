@@ -263,6 +263,7 @@ class MainActivity : AppCompatActivity() {
         val head = ui.row()
         val title = ui.col()
         title.addView(ui.text("我的任務", 26f, C.TEXT, true))
+        title.addView(ui.sub("v${BuildConfig.VERSION_NAME}（${BuildConfig.VERSION_CODE}）"))
         head.addView(title, ui.weight())
         head.addView(ui.secondary("記錄") { go(Screen.LOGS) })
         add(head, bottom = 18)
@@ -301,7 +302,6 @@ class MainActivity : AppCompatActivity() {
             Prefs.logout(); RunService.start(this, RunService.ACTION_SHUTDOWN); screen = Screen.HOME; render()
         })
         add(foot)
-        add(ui.sub("v${BuildConfig.VERSION_NAME}（${BuildConfig.VERSION_CODE}）").apply { gravity = Gravity.CENTER }, top = 4)
     }
 
     private fun taskCard(t: JSONObject): View {
