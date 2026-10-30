@@ -71,7 +71,9 @@ object Api {
     suspend fun fetchTask() = get("/api/mobile/tasks/current?device_id=${Prefs.deviceId}")
     suspend fun saveTask(task: JSONObject) = put("/api/mobile/tasks/current", task.put("device_id", Prefs.deviceId))
     suspend fun fetchScript(id: String, appVer: Long, capVer: Int) =
-        get("/api/mobile/scenarios/$id?appVer=$appVer&capVer=$capVer&device_id=${Prefs.deviceId}")
+        get("/api/mobile/scenarios/$id?appVer=$appVer&capVer=$capVer&device_id=${Prefs.deviceId}" +
+            // Only debug builds without a pinned key can run unsigned test overrides.
+            (if (BuildConfig.DEBUG && BuildConfig.SCRIPT_PUBKEY_HEX.isEmpty()) "&unsigned_ok=1" else ""))
     suspend fun uploadLogs(linesJson: String) =
         post("/api/mobile/logs", JSONObject().put("device_id", Prefs.deviceId).put("lines", org.json.JSONArray(linesJson)))
     suspend fun reportRun(run: JSONObject) = post("/api/mobile/runs", run.put("device_id", Prefs.deviceId))
