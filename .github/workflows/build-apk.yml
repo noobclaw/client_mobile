@@ -29,18 +29,29 @@ jobs:
         with:
           gradle-version: '8.14.3'
       - name: Unit tests
-        run: gradle :app:testDebugUnitTest --stacktrace
+        run: set -o pipefail; gradle :app:testDebugUnitTest 2>&1 | tee test.log
       - name: Assemble
         env:
           SCRIPT_PUBKEY: ${{ secrets.SCRIPT_PUBKEY_HEX }}
           API_BASE: ${{ github.event.inputs.api_base || 'https://api.noobclaw.com' }}
         run: |
-          gradle :app:assembleDebug -PapiBase="$API_BASE" -PscriptPubKey="$SCRIPT_PUBKEY" --stacktrace
+          set -o pipefail
+          gradle :app:assembleDebug -PapiBase="$API_BASE" -PscriptPubKey="$SCRIPT_PUBKEY" 2>&1 | tee build.log
           if [ -n "$SCRIPT_PUBKEY" ]; then
             gradle :app:assembleRelease -PapiBase="$API_BASE" -PscriptPubKey="$SCRIPT_PUBKEY" --stacktrace
           else
             echo "SCRIPT_PUBKEY_HEX secret not set: skipping release build (release refuses to run unsigned scripts)."
           fi
+      # Surface the compiler / Gradle errors as annotations (readable without downloading logs).
+      - name: Report errors
+        if: failure()
+        run: |
+          for f in test.log build.log; do
+            [ -f "$f" ] || continue
+            grep -E "^e: |error:|What went wrong|FAILED|Exception|Could not|> " "$f" | head -40 | while IFS= read -r line; do
+              echo "::error::$(echo "$line" | cut -c1-900)"
+            done
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: noobclaw-mobile-apk
