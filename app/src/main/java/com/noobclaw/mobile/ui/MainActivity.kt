@@ -101,6 +101,7 @@ class MainActivity : AppCompatActivity() {
     // ---------- login ----------
     private fun renderLogin() {
         title("登錄 NoobClaw")
+        label("v${BuildConfig.VERSION_NAME}（${BuildConfig.VERSION_CODE}）")
         val acc = field("用戶名或郵箱")
         val pw = field("密碼", password = true)
         button("登錄") {
@@ -138,6 +139,7 @@ class MainActivity : AppCompatActivity() {
 
     // ---------- main ----------
     private fun renderMain() {
+        label("NoobClaw Mobile v${BuildConfig.VERSION_NAME}（${BuildConfig.VERSION_CODE}）")
         title("這台手機")
         renderPermissions()
         renderTask()

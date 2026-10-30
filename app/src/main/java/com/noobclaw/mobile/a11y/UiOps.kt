@@ -82,14 +82,14 @@ class UiOps(private val svc: () -> NcAccessibilityService?) {
         return true
     }
 
-    /** Breadth-first search of the active window. Returns node descriptors with handles. */
+    /** Breadth-first search of the front app's windows (top-most first). Returns node descriptors with handles. */
     fun find(q: Query): JSONArray {
         val out = JSONArray()
-        val root = service().root() ?: return out
-        // Never read other apps' screens, even if the system hands us their window.
-        if (!A11yGuard.isTarget(root.packageName)) return out
+        // Only the target app's windows, and only when it is the front app (frontAppRoots checks both).
+        val roots = service().frontAppRoots()
+        if (roots.isEmpty()) return out
         val queue = ArrayDeque<AccessibilityNodeInfo>()
-        queue.add(root)
+        roots.forEach { queue.add(it) }
         var visited = 0
         while (queue.isNotEmpty() && out.length() < q.limit && visited < 4000) {
             val n = queue.removeFirst()
@@ -224,10 +224,10 @@ class UiOps(private val svc: () -> NcAccessibilityService?) {
      */
     fun dumpTree(maxNodes: Int = 800): JSONObject {
         val svc = service()
-        // Read the front window once and check that same root (no race with an app switch).
-        val root = svc.root()
-        val pkg = root?.packageName?.toString()
-        if (root == null || !A11yGuard.isTarget(pkg)) return JSONObject().put("package", pkg ?: "").put("redacted", true)
+        // Read the front app's windows once and check them (no race with an app switch).
+        val roots = svc.frontAppRoots()
+        val pkg = roots.firstOrNull()?.packageName?.toString()
+        if (roots.isEmpty() || !A11yGuard.isTarget(pkg)) return JSONObject().put("package", pkg ?: "").put("redacted", true)
         var count = 0
         fun walk(n: AccessibilityNodeInfo, depth: Int): JSONObject {
             count++
@@ -250,7 +250,10 @@ class UiOps(private val svc: () -> NcAccessibilityService?) {
             if (kids.length() > 0) o.put("kids", kids)
             return o
         }
-        return JSONObject().put("package", pkg).put("root", walk(root, 0)).put("nodes", count)
+        val wins = JSONArray()
+        roots.forEach { r -> if (count < maxNodes) wins.put(walk(r, 0)) }
+        // "root" = top-most window (kept for older readers); "windows" = all front-app windows, top first.
+        return JSONObject().put("package", pkg).put("root", wins.optJSONObject(0)).put("windows", wins).put("nodes", count)
     }
 
     companion object { const val MAX_HANDLES = 5000 }

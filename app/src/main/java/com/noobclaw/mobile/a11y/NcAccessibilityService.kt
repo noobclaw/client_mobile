@@ -63,8 +63,30 @@ class NcAccessibilityService : AccessibilityService() {
 
     fun root(): AccessibilityNodeInfo? = rootInActiveWindow
 
-    /** Package of the window in front; null (= blocked by the guard) when it cannot be read. */
-    fun activePackage(): String? = rootInActiveWindow?.packageName?.toString()
+    /**
+     * Roots of the front app's windows, top-most first. TikTok shows the comment sheet and the reply box in
+     * their own windows on top of the video, so reading only the "active" window misses them.
+     * Returns nothing unless the front application window belongs to a target app.
+     */
+    fun frontAppRoots(): List<AccessibilityNodeInfo> {
+        val wins = runCatching { windows }.getOrNull().orEmpty()
+            .filter { it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION }
+            .sortedByDescending { it.layer }
+        if (wins.isEmpty()) return listOfNotNull(rootInActiveWindow)
+        val roots = wins.mapNotNull { runCatching { it.root }.getOrNull() }
+        val frontPkg = roots.firstOrNull()?.packageName?.toString() ?: return emptyList()
+        if (!A11yGuard.isTarget(frontPkg)) return emptyList()
+        return roots.filter { it.packageName?.toString() == frontPkg }
+    }
+
+    /** Package of the front application window; null (= blocked by the guard) when it cannot be read. */
+    fun activePackage(): String? {
+        val wins = runCatching { windows }.getOrNull().orEmpty()
+            .filter { it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION }
+            .sortedByDescending { it.layer }
+        val top = wins.firstOrNull()?.let { runCatching { it.root }.getOrNull() }
+        return (top ?: rootInActiveWindow)?.packageName?.toString()
+    }
 
     /** Dispatches a gesture and suspends until the system reports completion or cancellation. */
     suspend fun gesture(path: Path, durationMs: Long): Boolean = suspendCancellableCoroutine { cont ->
