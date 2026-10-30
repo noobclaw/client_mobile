@@ -53,9 +53,11 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     // QuickJS binding with coroutine support and evaluation timeouts (Apache-2.0).
     implementation("io.github.dokar3:quickjs-kt:1.0.15")
-    // Ed25519 verification on Android 10-12 (the platform JCA only has it from API 33).
-    implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
+    // Ed25519 verification on Android 10-12 (the platform JCA only has it from API 33). ~60 KB, CC0.
+    implementation("net.i2p.crypto:eddsa:0.3.0")
 
     testImplementation("junit:junit:4.13.2")
+    // Tests sign with BouncyCastle and verify with the app code: proves the two Ed25519 implementations agree.
+    testImplementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
     testImplementation("org.json:json:20240303")
 }

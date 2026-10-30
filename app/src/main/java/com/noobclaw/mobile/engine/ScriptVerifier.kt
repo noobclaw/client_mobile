@@ -1,11 +1,13 @@
 package com.noobclaw.mobile.engine
 
-import org.bouncycastle.crypto.params.Ed25519PublicKeyParameters
-import org.bouncycastle.crypto.signers.Ed25519Signer
+import net.i2p.crypto.eddsa.EdDSAEngine
+import net.i2p.crypto.eddsa.EdDSAPublicKey
+import net.i2p.crypto.eddsa.spec.EdDSANamedCurveTable
+import net.i2p.crypto.eddsa.spec.EdDSAPublicKeySpec
 import java.security.MessageDigest
 
 /**
- * Verifies signed script packs (PRD §劇本安全 #1).
+ * Verifies signed script packs (PRD §劇本安全 #1). Ed25519 via net.i2p.crypto:eddsa.
  *
  * Signed message = UTF-8 bytes of: "<scriptId>\n<version>\n<sha256(code) as lowercase hex>".
  * The backend only stores the signature; the private key lives offline (docs/SCRIPT_SIGNING.md).
@@ -22,11 +24,13 @@ object ScriptVerifier {
         val pub = pubKeyHex.hexToBytes()
         val sig = signatureHex.hexToBytes()
         if (pub.size != 32 || sig.size != 64) return false
-        val signer = Ed25519Signer()
-        signer.init(false, Ed25519PublicKeyParameters(pub, 0))
+        // Small pure-Java Ed25519 (i2p eddsa) instead of BouncyCastle: keeps the APK small; works on Android 10+.
+        val spec = EdDSANamedCurveTable.getByName(EdDSANamedCurveTable.ED_25519)
+        val engine = EdDSAEngine(MessageDigest.getInstance(spec.hashAlgorithm))
+        engine.initVerify(EdDSAPublicKey(EdDSAPublicKeySpec(pub, spec)))
         val msg = message(scriptId, version, code)
-        signer.update(msg, 0, msg.size)
-        signer.verifySignature(sig)
+        engine.update(msg)
+        engine.verify(sig)
     }.getOrDefault(false)
 
     private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
