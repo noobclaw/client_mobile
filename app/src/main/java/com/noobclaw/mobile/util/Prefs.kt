@@ -2,6 +2,7 @@ package com.noobclaw.mobile.util
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.provider.Settings
 import java.util.UUID
 
 /**
@@ -14,7 +15,17 @@ object Prefs {
 
     fun init(ctx: Context) {
         sp = ctx.getSharedPreferences("nc_mobile", Context.MODE_PRIVATE)
-        if (deviceId.isEmpty()) sp.edit().putString(K_DEVICE, UUID.randomUUID().toString()).apply()
+        // 已有編號的安裝(升級上來的)保持不變,任務都掛在它下面。新安裝用系統的 ANDROID_ID:
+        //   同一臺手機 + 同一簽名 → 卸載重裝也不變,電腦端就不會冒出「兩臺一樣的手機」(2026-10-30)。
+        if (deviceId.isEmpty()) sp.edit().putString(K_DEVICE, stableId(ctx)).apply()
+    }
+
+    private fun stableId(ctx: Context): String {
+        val aid = runCatching { Settings.Secure.getString(ctx.contentResolver, Settings.Secure.ANDROID_ID) }.getOrNull()
+            ?.trim()?.lowercase().orEmpty()
+        // 9774d56d682e549c = 老機型上大量重複的已知壞值
+        val ok = aid.length >= 8 && aid != "9774d56d682e549c" && aid.any { it != '0' }
+        return if (ok) "a-$aid" else UUID.randomUUID().toString()
     }
 
     private const val K_TOKEN = "token"
@@ -35,7 +46,7 @@ object Prefs {
         get() = sp.getString(K_WALLET, "") ?: ""
         set(v) = sp.edit().putString(K_WALLET, v).apply()
 
-    /** Random install id. Not a hardware identifier; it resets on reinstall by design. */
+    /** Install id: "a-" + ANDROID_ID (stable across reinstalls for our signing key), or a random UUID when unavailable. */
     val deviceId: String
         get() = sp.getString(K_DEVICE, "") ?: ""
 
