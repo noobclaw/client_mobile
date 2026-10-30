@@ -52,6 +52,7 @@ class RunService : Service() {
             }
             ACTION_RUN_NOW -> startRun(slotKey = "manual-" + System.currentTimeMillis(), dryRun = false)
             ACTION_DRY_RUN -> startRun(slotKey = "dry-" + System.currentTimeMillis(), dryRun = true)
+            ACTION_CAPTURE -> scope.launch { captureScreen() }
             ACTION_SHUTDOWN -> { stopCurrentRun("service_shutdown"); stopSelf(); return START_NOT_STICKY }
         }
         // The scheduler only runs when the user switched automation on; a manual run / stop does not turn it on.
@@ -192,6 +193,27 @@ class RunService : Service() {
         }
     }
 
+    /**
+     * Selector calibration: waits while the tester switches to the TikTok screen to look at, then uploads the
+     * redacted accessibility tree (only TikTok windows; typed text masked) with a support code.
+     */
+    private suspend fun captureScreen() {
+        RunLog.i("8 秒後抓取畫面：請切到 TikTok 要看的那個畫面")
+        delay(8000)
+        val tree = runCatching { com.noobclaw.mobile.a11y.UiOps { NcAccessibilityService.instance }.dumpTree(1500) }
+            .getOrElse { JSONObject().put("error", it.message ?: "dump_failed") }
+        if (tree.optBoolean("redacted")) { RunLog.w("前台不是 TikTok，沒有抓取"); return }
+        val logs = org.json.JSONArray()
+        RunLog.recent().takeLast(100).forEach { logs.put(JSONObject().put("ts", it.ts).put("level", it.level).put("msg", it.msg)) }
+        val tk = targetAppInfo()
+        runCatching {
+            Api.sendDiagnostics(JSONObject().put("kind", "screen_capture").put("tree", tree).put("logs", logs)
+                .put("target_app", tk?.first ?: "").put("target_ver", tk?.second ?: 0)
+                .put("app_ver", com.noobclaw.mobile.BuildConfig.VERSION_NAME).put("android_sdk", Build.VERSION.SDK_INT))
+        }.onSuccess { RunLog.i("已上傳畫面結構，客服碼 $it") }.onFailure { RunLog.e("上傳失敗：${it.message}") }
+        if (currentRun?.isActive != true && !autostart()) stopSelf()
+    }
+
     /** Returns a reason code when the run must not start (FR-04 app-side part; the script does the rest). */
     private fun preconditions(): String? {
         if (Prefs.token.isEmpty()) return "not_logged_in"
@@ -249,6 +271,7 @@ class RunService : Service() {
         const val ACTION_DRY_RUN = "com.noobclaw.mobile.DRY_RUN"
         const val ACTION_STOP_RUN = "com.noobclaw.mobile.STOP_RUN"
         const val ACTION_SHUTDOWN = "com.noobclaw.mobile.SHUTDOWN"
+        const val ACTION_CAPTURE = "com.noobclaw.mobile.CAPTURE"
 
         fun start(ctx: Context, action: String? = null) {
             val i = Intent(ctx, RunService::class.java)

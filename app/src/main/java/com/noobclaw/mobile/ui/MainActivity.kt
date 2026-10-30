@@ -293,6 +293,11 @@ class MainActivity : AppCompatActivity() {
             getSharedPreferences("nc_mobile", MODE_PRIVATE).edit().putBoolean("autostart", false).apply()
             RunService.start(this, RunService.ACTION_SHUTDOWN)
         }
+        button("抓取 TikTok 畫面結構（按下後 8 秒內切到 TikTok）") {
+            if (!NcAccessibilityService.isRunning) { toast("先開啟無障礙服務"); return@button }
+            RunService.start(this, RunService.ACTION_CAPTURE)
+            toast("8 秒後抓取，現在切到 TikTok")
+        }
         button("發送診斷（生成客服碼）") {
             lifecycleScope.launch {
                 try {
