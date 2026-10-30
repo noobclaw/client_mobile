@@ -38,6 +38,7 @@ class RunService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var loop: Job? = null
     @Volatile private var currentRun: Job? = null
+    @Volatile private var captureJob: Job? = null
     @Volatile private var engine: ScriptEngine? = null
     private var overlay: FloatingStop? = null
 
@@ -48,11 +49,13 @@ class RunService : Service() {
         when (intent?.action) {
             ACTION_STOP_RUN -> {
                 if (currentRun?.isActive == true) stopCurrentRun("user_stopped")
-                else if (!autostart()) { stopSelf(); return START_NOT_STICKY }
+                else if (!autostart() && captureJob?.isActive != true) { stopSelf(); return START_NOT_STICKY }
             }
             ACTION_RUN_NOW -> startRun(slotKey = "manual-" + System.currentTimeMillis(), dryRun = false)
             ACTION_DRY_RUN -> startRun(slotKey = "dry-" + System.currentTimeMillis(), dryRun = true)
-            ACTION_CAPTURE -> scope.launch { captureScreen() }
+            ACTION_CAPTURE -> if (captureJob?.isActive != true) captureJob = scope.launch {
+                try { captureScreen() } finally { captureJob = null; stopIfIdle() }
+            }
             ACTION_SHUTDOWN -> { stopCurrentRun("service_shutdown"); stopSelf(); return START_NOT_STICKY }
         }
         // The scheduler only runs when the user switched automation on; a manual run / stop does not turn it on.
@@ -189,7 +192,7 @@ class RunService : Service() {
             // NonCancellable: the report still goes out when the run was cancelled or the service is stopping.
             kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) { runCatching { Api.reportRun(report) } }
             if (autostart()) startInForeground(getString(R.string.app_name) + " · 待命中")
-            else stopSelf() // a manual run with automation off: nothing to stand by for
+            else { currentRun = null; stopIfIdle() } // a manual run with automation off: nothing to stand by for
         }
     }
 
@@ -211,7 +214,11 @@ class RunService : Service() {
                 .put("target_app", tk?.first ?: "").put("target_ver", tk?.second ?: 0)
                 .put("app_ver", com.noobclaw.mobile.BuildConfig.VERSION_NAME).put("android_sdk", Build.VERSION.SDK_INT))
         }.onSuccess { RunLog.i("已上傳畫面結構，客服碼 $it") }.onFailure { RunLog.e("上傳失敗：${it.message}") }
-        if (currentRun?.isActive != true && !autostart()) stopSelf()
+    }
+
+    /** Stops the service when automation is off and neither a run nor a capture is pending. */
+    private fun stopIfIdle() {
+        if (currentRun?.isActive != true && captureJob?.isActive != true && !autostart()) stopSelf()
     }
 
     /** Returns a reason code when the run must not start (FR-04 app-side part; the script does the rest). */

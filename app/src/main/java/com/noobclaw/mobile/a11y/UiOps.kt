@@ -224,9 +224,10 @@ class UiOps(private val svc: () -> NcAccessibilityService?) {
      */
     fun dumpTree(maxNodes: Int = 800): JSONObject {
         val svc = service()
-        val pkg = svc.activePackage()
-        if (!A11yGuard.isTarget(pkg)) return JSONObject().put("package", pkg ?: "").put("redacted", true)
-        val root = svc.root() ?: return JSONObject().put("package", pkg ?: "")
+        // Read the front window once and check that same root (no race with an app switch).
+        val root = svc.root()
+        val pkg = root?.packageName?.toString()
+        if (root == null || !A11yGuard.isTarget(pkg)) return JSONObject().put("package", pkg ?: "").put("redacted", true)
         var count = 0
         fun walk(n: AccessibilityNodeInfo, depth: Int): JSONObject {
             count++
