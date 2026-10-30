@@ -9,7 +9,7 @@ import com.noobclaw.mobile.util.Prefs
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
-        if (Prefs.token.isNotEmpty()) RunService.start(context)
+        if (Prefs.token.isNotEmpty() && Prefs.consentVersion >= RunService.CONSENT_VERSION) RunService.start(context)
     }
 }
 

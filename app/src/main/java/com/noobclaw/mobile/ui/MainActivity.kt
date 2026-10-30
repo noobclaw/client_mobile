@@ -228,7 +228,7 @@ class MainActivity : AppCompatActivity() {
             RunService.start(this) // stand by
             render()
         }, bottom = 10)
-        add(ui.link("退出登錄", C.SUB) { Prefs.logout(); render() }.apply { gravity = Gravity.CENTER })
+        add(ui.link("退出登錄", C.SUB) { Prefs.logout(); RunService.start(this, RunService.ACTION_SHUTDOWN); render() }.apply { gravity = Gravity.CENTER })
     }
 
     // ---------- permissions ----------
