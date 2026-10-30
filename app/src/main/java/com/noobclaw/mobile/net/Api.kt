@@ -11,7 +11,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
-class ApiException(val status: Int, val code: String, message: String) : Exception(message)
+class ApiException(val status: Int, val code: String, message: String, val body: JSONObject = JSONObject()) : Exception(message)
 
 /**
  * Thin JSON client for the NoobClaw backend. Every request carries
@@ -49,7 +49,8 @@ object Api {
                 throw ApiException(
                     res.code,
                     json.optString("error", "http_${res.code}"),
-                    json.optString("message", json.optString("error", "HTTP ${res.code}"))
+                    json.optString("message", json.optString("error", "HTTP ${res.code}")),
+                    json,
                 )
             }
             json

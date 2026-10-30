@@ -110,7 +110,16 @@ class RunService : Service() {
         try { sendHeartbeat(tk) } catch (e: com.noobclaw.mobile.net.ApiException) {
             // Registration at login can fail after the token was saved: register again and retry once.
             if (e.code != "device_not_registered") throw e
-            Api.registerDevice(JSONObject().put("vendor", Build.MANUFACTURER + "/" + Build.MODEL).put("android_sdk", Build.VERSION.SDK_INT))
+            try {
+                Api.registerDevice(JSONObject().put("vendor", Build.MANUFACTURER + "/" + Build.MODEL).put("android_sdk", Build.VERSION.SDK_INT))
+            } catch (e2: com.noobclaw.mobile.net.ApiException) {
+                if (e2.code != "phone_limit") throw e2
+                // 被移除後名額已被別的手機佔了:標記超額(首頁提示),不再每 15 秒報錯
+                if (!Prefs.overLimit) RunLog.w("超出會員可用手機數，這臺手機暫停")
+                Prefs.overLimit = true
+                Prefs.phoneLimit = e2.body.optInt("limit", Prefs.phoneLimit)
+                return
+            }
             sendHeartbeat(tk)
         }
     }
@@ -127,12 +136,17 @@ class RunService : Service() {
                 .put("running", currentRun?.isActive == true)
                 .put("cooldown_until", Prefs.cooldownUntil)
         )
+        // 會員可用手機數:超出的手機不跑任務(服務器也不下發劇本)。
+        Prefs.overLimit = r.optBoolean("over_limit", false)
+        Prefs.phoneLimit = r.optInt("phone_limit", 0)
         // Run / stop requests sent from the desktop app ("我的手機").
         val cmds = r.optJSONArray("commands") ?: return
         for (i in 0 until cmds.length()) {
             val c = cmds.optJSONObject(i) ?: continue
             val taskId = c.optString("task_id").takeIf { it.isNotEmpty() && it != "null" }
-            when (c.optString("action")) {
+            val action = c.optString("action")
+            if (action != "stop" && Prefs.overLimit) { RunLog.w("超出會員可用手機數，不運行"); continue }
+            when (action) {
                 "stop" -> if (currentRun?.isActive == true) stopCurrentRun("user_stopped")
                 "run" -> { RunLog.i("電腦端要求運行"); refreshTasks(); startRun("remote-" + System.currentTimeMillis(), dryRun = false, taskId = taskId) }
                 "dry_run" -> { RunLog.i("電腦端要求試跑"); refreshTasks(); startRun("remote-dry-" + System.currentTimeMillis(), dryRun = true, taskId = taskId) }
@@ -157,6 +171,7 @@ class RunService : Service() {
         if (fetch) runCatching { Api.fetchTasks().optJSONArray("tasks") }.onSuccess { if (it != null) Prefs.tasksJson = it.toString() }
             .onFailure { RunLog.w("拉取任務失敗，用本地緩存：${it.message}") }
         if (currentRun?.isActive == true) return
+        if (Prefs.overLimit) return // 超出會員可用手機數:不排程
         // One run at a time: the first due task runs now, the next one on a later heartbeat (catch-up window 2 h).
         for (task in Prefs.tasks()) {
             val due = Schedule.due(task, ZonedDateTime.now(), doneSlots(), "#" + task.optString("id")) ?: continue

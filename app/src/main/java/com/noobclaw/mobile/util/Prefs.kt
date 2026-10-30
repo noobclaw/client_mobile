@@ -37,6 +37,8 @@ object Prefs {
     private const val K_BINDING = "binding_json"
     private const val K_COOLDOWN = "cooldown_until"
     private const val K_TASKS = "tasks_json"
+    private const val K_OVER = "over_limit"
+    private const val K_PHONE_LIMIT = "phone_limit"
 
     var token: String
         get() = sp.getString(K_TOKEN, "") ?: ""
@@ -84,7 +86,15 @@ object Prefs {
         get() = sp.getLong(K_COOLDOWN, 0L)
         set(v) = sp.edit().putLong(K_COOLDOWN, v).apply()
 
+    /** Server says this phone is beyond the account's membership phone count: it may not run tasks. */
+    var overLimit: Boolean
+        get() = sp.getBoolean(K_OVER, false)
+        set(v) = sp.edit().putBoolean(K_OVER, v).apply()
+    var phoneLimit: Int
+        get() = sp.getInt(K_PHONE_LIMIT, 0)
+        set(v) = sp.edit().putInt(K_PHONE_LIMIT, v).apply()
+
     fun logout() {
-        sp.edit().remove(K_TOKEN).remove(K_WALLET).remove(K_TASK).remove(K_TASKS).remove(K_BINDING).apply()
+        sp.edit().remove(K_TOKEN).remove(K_WALLET).remove(K_TASK).remove(K_TASKS).remove(K_BINDING).remove(K_OVER).remove(K_PHONE_LIMIT).apply()
     }
 }

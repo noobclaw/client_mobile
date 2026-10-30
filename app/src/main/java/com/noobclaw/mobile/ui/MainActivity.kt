@@ -195,7 +195,15 @@ class MainActivity : AppCompatActivity() {
             lifecycleScope.launch {
                 try {
                     Api.login(acc.text.toString().trim(), pw.text.toString())
-                    Api.registerDevice(JSONObject().put("vendor", Build.MANUFACTURER + "/" + Build.MODEL).put("android_sdk", Build.VERSION.SDK_INT))
+                    try {
+                        Api.registerDevice(JSONObject().put("vendor", Build.MANUFACTURER + "/" + Build.MODEL).put("android_sdk", Build.VERSION.SDK_INT))
+                    } catch (e: com.noobclaw.mobile.net.ApiException) {
+                        if (e.code != "phone_limit") throw e
+                        // 會員可用手機數已滿:不讓這臺手機登錄
+                        Prefs.logout()
+                        toast("當前會員最多 ${e.body.optInt("limit")} 臺手機，已滿。請升級會員，或在電腦端移除不用的手機")
+                        return@launch
+                    }
                     syncTasks(); render()
                 } catch (e: Exception) { toast("登錄失敗：${e.message}") }
             }
@@ -255,6 +263,12 @@ class MainActivity : AppCompatActivity() {
         if (missingPerms().isEmpty()) action() else showPermDialog(action)
     }
 
+    /** Run / dry-run from the app: blocked when this phone is beyond the membership phone count. */
+    private fun withRunPerms(action: () -> Unit) {
+        if (Prefs.overLimit) { toast("超出會員可用手機數（${Prefs.phoneLimit} 臺），任務暫停"); return }
+        withPerms(action)
+    }
+
     private fun showPermDialog(after: (() -> Unit)?) {
         pendingAfterPerms = after
         val missing = missingPerms()
@@ -302,7 +316,13 @@ class MainActivity : AppCompatActivity() {
         if (missing.isEmpty()) r.addView(ui.pill("就緒", C.ACCENT))
         else r.addView(ui.pill("缺權限", C.WARN).apply { setOnClickListener { showPermDialog(null) } })
         status.addView(r)
-        add(status, bottom = 22)
+        add(status, bottom = if (Prefs.overLimit) 12 else 22)
+        if (Prefs.overLimit) {
+            val warn = ui.card()
+            warn.addView(ui.text("超出會員可用手機數（${Prefs.phoneLimit} 臺），任務暫停", 14f, C.WARN, true))
+            warn.addView(ui.sub("升級會員，或在電腦端移除不用的手機"))
+            add(warn, bottom = 22)
+        }
 
         val tasks = Prefs.tasks()
 
@@ -352,7 +372,7 @@ class MainActivity : AppCompatActivity() {
         val btns = ui.row().apply { setPadding(0, ui.dp(10), 0, 0) }
         if (running) btns.addView(ui.secondary("■  停止", C.DANGER) { RunService.start(this, RunService.ACTION_STOP_RUN) }, ui.weight())
         else btns.addView(ui.primary("▶  運行") {
-            withPerms { RunService.start(this, RunService.ACTION_RUN_NOW, id); toast("已開始") }
+            withRunPerms { RunService.start(this, RunService.ACTION_RUN_NOW, id); toast("已開始") }
         }, ui.weight())
         btns.addView(ui.spacer(1).apply { layoutParams = LinearLayout.LayoutParams(ui.dp(8), 1) })
         btns.addView(ui.secondary("編輯") { editTask(t) })
@@ -368,7 +388,7 @@ class MainActivity : AppCompatActivity() {
         val box = ui.col(18).apply { background = ui.shape(C.SURFACE, 20, C.BORDER) }
         box.addView(ui.h2(t.optString("name").ifEmpty { scriptOf(t.optString("script_id")).title }), ui.lp(bottom = 14))
         box.addView(ui.secondary("試跑（不扣費）") {
-            d.dismiss(); withPerms { RunService.start(this, RunService.ACTION_DRY_RUN, t.optString("id")); toast("試跑開始") }
+            d.dismiss(); withRunPerms { RunService.start(this, RunService.ACTION_DRY_RUN, t.optString("id")); toast("試跑開始") }
         }, ui.lp(bottom = 10))
         box.addView(ui.secondary(if (t.optBoolean("enabled")) "關閉定時" else "開啟定時") {
             d.dismiss(); saveTask(JSONObject(t.toString()).put("enabled", !t.optBoolean("enabled")))
@@ -568,7 +588,7 @@ class MainActivity : AppCompatActivity() {
 
         add(ui.primary(if (editing) "保存" else "保存並運行") {
             val t = build() ?: return@primary
-            saveTask(t) { if (!editing) withPerms { RunService.start(this, RunService.ACTION_RUN_NOW, t.optString("id")); toast("已開始") } }
+            saveTask(t) { if (!editing) withRunPerms { RunService.start(this, RunService.ACTION_RUN_NOW, t.optString("id")); toast("已開始") } }
         }, bottom = 10)
         if (!editing) add(ui.secondary("只保存") { build()?.let { saveTask(it) } })
     }
