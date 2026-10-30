@@ -33,6 +33,13 @@ android {
 
     buildFeatures { buildConfig = true }
 
+    // Compress dex and native libs inside the APK: the test APK has to stay under 10 MB so it can be
+    // uploaded to the cloud test phone from the browser.
+    packaging {
+        dex { useLegacyPackaging = true }
+        jniLibs { useLegacyPackaging = true }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
