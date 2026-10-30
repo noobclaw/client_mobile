@@ -48,8 +48,23 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        reportLastCrash()
         render()
         RunLog.onLine(logListener)
+    }
+
+    private fun reportLastCrash() {
+        val sp = getSharedPreferences("nc_mobile", MODE_PRIVATE)
+        val crash = sp.getString("last_crash", null) ?: return
+        sp.edit().remove("last_crash").apply()
+        RunLog.e("上次 App 崩潰：" + crash.take(600))
+        if (Prefs.token.isEmpty()) return
+        lifecycleScope.launch {
+            runCatching {
+                Api.sendDiagnostics(JSONObject().put("kind", "crash").put("crash", crash)
+                    .put("app_ver", BuildConfig.VERSION_NAME).put("android_sdk", Build.VERSION.SDK_INT))
+            }.onSuccess { RunLog.i("崩潰信息已上傳，客服碼 $it") }
+        }
     }
 
     override fun onPause() {

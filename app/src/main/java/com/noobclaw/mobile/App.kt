@@ -12,6 +12,17 @@ class App : Application() {
         instance = this
         Prefs.init(this)
         RunLog.init(this)
+        // Keep the last crash so it can be shown and uploaded on the next start (the system turns the
+        // accessibility service off after a crash, so we need to know why).
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { t, e ->
+            runCatching {
+                getSharedPreferences("nc_mobile", MODE_PRIVATE).edit()
+                    .putString("last_crash", "${System.currentTimeMillis()} [${t.name}] ${android.util.Log.getStackTraceString(e).take(4000)}")
+                    .commit()
+            }
+            previous?.uncaughtException(t, e)
+        }
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL_RUN, getString(R.string.notif_channel), NotificationManager.IMPORTANCE_LOW)

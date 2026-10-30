@@ -19,6 +19,32 @@ class NcAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         instance = this
         RunLog.i("無障礙服務已連接")
+        if (com.noobclaw.mobile.BuildConfig.DEBUG) showDevBubble()
+    }
+
+    private var bubble: android.view.View? = null
+
+    /**
+     * Debug builds only: a small "抓" bubble drawn on the accessibility overlay layer. Tapping it uploads the
+     * current TikTok screen tree (redacted) without leaving TikTok, for selector calibration.
+     */
+    private fun showDevBubble() {
+        if (bubble != null) return
+        val wm = getSystemService(android.view.WindowManager::class.java)
+        val tv = android.widget.TextView(this).apply {
+            text = "抓"
+            setTextColor(android.graphics.Color.WHITE)
+            textSize = 13f
+            setPadding(22, 14, 22, 14)
+            background = android.graphics.drawable.GradientDrawable().apply { cornerRadius = 40f; setColor(0xAA3E63DD.toInt()) }
+            setOnClickListener { com.noobclaw.mobile.run.RunService.start(this@NcAccessibilityService, com.noobclaw.mobile.run.RunService.ACTION_CAPTURE_NOW) }
+        }
+        val lp = android.view.WindowManager.LayoutParams(
+            android.view.WindowManager.LayoutParams.WRAP_CONTENT, android.view.WindowManager.LayoutParams.WRAP_CONTENT,
+            android.view.WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, android.graphics.PixelFormat.TRANSLUCENT,
+        ).apply { gravity = android.view.Gravity.START or android.view.Gravity.CENTER_VERTICAL; x = 0; y = 0 }
+        runCatching { wm.addView(tv, lp); bubble = tv }.onFailure { RunLog.w("開發懸浮鈕失敗：${it.message}") }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -29,6 +55,8 @@ class NcAccessibilityService : AccessibilityService() {
     override fun onInterrupt() {}
 
     override fun onDestroy() {
+        bubble?.let { b -> runCatching { getSystemService(android.view.WindowManager::class.java).removeView(b) } }
+        bubble = null
         if (instance === this) instance = null
         super.onDestroy()
     }

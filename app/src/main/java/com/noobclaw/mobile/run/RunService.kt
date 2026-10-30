@@ -53,8 +53,11 @@ class RunService : Service() {
             }
             ACTION_RUN_NOW -> startRun(slotKey = "manual-" + System.currentTimeMillis(), dryRun = false)
             ACTION_DRY_RUN -> startRun(slotKey = "dry-" + System.currentTimeMillis(), dryRun = true)
-            ACTION_CAPTURE -> if (captureJob?.isActive != true) captureJob = scope.launch {
-                try { captureScreen() } finally { captureJob = null; stopIfIdle() }
+            ACTION_CAPTURE, ACTION_CAPTURE_NOW -> if (captureJob?.isActive != true) {
+                val wait = intent?.action == ACTION_CAPTURE
+                captureJob = scope.launch {
+                    try { captureScreen(wait) } finally { runCatching { uploadLogs() }; captureJob = null; stopIfIdle() }
+                }
             }
             ACTION_SHUTDOWN -> { stopCurrentRun("service_shutdown"); stopSelf(); return START_NOT_STICKY }
         }
@@ -190,7 +193,10 @@ class RunService : Service() {
             overlay?.hide(); overlay = null
             report.put("duration_ms", System.currentTimeMillis() - started)
             // NonCancellable: the report still goes out when the run was cancelled or the service is stopping.
-            kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) { runCatching { Api.reportRun(report) } }
+            kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+                runCatching { Api.reportRun(report) }
+                runCatching { uploadLogs() } // also when automation is off (manual / dry runs)
+            }
             if (autostart()) startInForeground(getString(R.string.app_name) + " · 待命中")
             else { currentRun = null; stopIfIdle() } // a manual run with automation off: nothing to stand by for
         }
@@ -200,9 +206,11 @@ class RunService : Service() {
      * Selector calibration: waits while the tester switches to the TikTok screen to look at, then uploads the
      * redacted accessibility tree (only TikTok windows; typed text masked) with a support code.
      */
-    private suspend fun captureScreen() {
-        RunLog.i("8 秒後抓取畫面：請切到 TikTok 要看的那個畫面")
-        delay(8000)
+    private suspend fun captureScreen(wait: Boolean) {
+        if (wait) {
+            RunLog.i("8 秒後抓取畫面：請切到 TikTok 要看的那個畫面")
+            delay(8000)
+        }
         val tree = runCatching { com.noobclaw.mobile.a11y.UiOps { NcAccessibilityService.instance }.dumpTree(1500) }
             .getOrElse { JSONObject().put("error", it.message ?: "dump_failed") }
         if (tree.optBoolean("redacted")) { RunLog.w("前台不是 TikTok，沒有抓取"); return }
@@ -213,7 +221,12 @@ class RunService : Service() {
             Api.sendDiagnostics(JSONObject().put("kind", "screen_capture").put("tree", tree).put("logs", logs)
                 .put("target_app", tk?.first ?: "").put("target_ver", tk?.second ?: 0)
                 .put("app_ver", com.noobclaw.mobile.BuildConfig.VERSION_NAME).put("android_sdk", Build.VERSION.SDK_INT))
-        }.onSuccess { RunLog.i("已上傳畫面結構，客服碼 $it") }.onFailure { RunLog.e("上傳失敗：${it.message}") }
+        }.onSuccess {
+            RunLog.i("已上傳畫面結構，客服碼 $it")
+            if (!wait) kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                android.widget.Toast.makeText(applicationContext, "已抓取 $it", android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }.onFailure { RunLog.e("上傳失敗：${it.message}") }
     }
 
     /** Stops the service when automation is off and neither a run nor a capture is pending. */
@@ -278,6 +291,7 @@ class RunService : Service() {
         const val ACTION_STOP_RUN = "com.noobclaw.mobile.STOP_RUN"
         const val ACTION_SHUTDOWN = "com.noobclaw.mobile.SHUTDOWN"
         const val ACTION_CAPTURE = "com.noobclaw.mobile.CAPTURE"
+        const val ACTION_CAPTURE_NOW = "com.noobclaw.mobile.CAPTURE_NOW"
 
         fun start(ctx: Context, action: String? = null) {
             val i = Intent(ctx, RunService::class.java)
