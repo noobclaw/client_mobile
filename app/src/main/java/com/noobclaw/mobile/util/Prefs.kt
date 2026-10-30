@@ -38,6 +38,8 @@ object Prefs {
     private const val K_COOLDOWN = "cooldown_until"
     private const val K_TASKS = "tasks_json"
     private const val K_OVER = "over_limit"
+    private const val K_LANG = "lang"
+    private const val K_ACCOUNT = "account"
     private const val K_PHONE_LIMIT = "phone_limit"
 
     var token: String
@@ -86,6 +88,16 @@ object Prefs {
         get() = sp.getLong(K_COOLDOWN, 0L)
         set(v) = sp.edit().putLong(K_COOLDOWN, v).apply()
 
+    /** UI language code (I18n.Lang.code); empty = follow the system. Kept across logout. */
+    var lang: String
+        get() = sp.getString(K_LANG, "") ?: ""
+        set(v) = sp.edit().putString(K_LANG, v).apply()
+
+    /** The user name / email typed at login (shown in 我的). */
+    var account: String
+        get() = sp.getString(K_ACCOUNT, "") ?: ""
+        set(v) = sp.edit().putString(K_ACCOUNT, v).apply()
+
     /** Server says this phone is beyond the account's membership phone count: it may not run tasks. */
     var overLimit: Boolean
         get() = sp.getBoolean(K_OVER, false)
@@ -95,6 +107,6 @@ object Prefs {
         set(v) = sp.edit().putInt(K_PHONE_LIMIT, v).apply()
 
     fun logout() {
-        sp.edit().remove(K_TOKEN).remove(K_WALLET).remove(K_TASK).remove(K_TASKS).remove(K_BINDING).remove(K_OVER).remove(K_PHONE_LIMIT).apply()
+        sp.edit().remove(K_TOKEN).remove(K_WALLET).remove(K_TASK).remove(K_TASKS).remove(K_BINDING).remove(K_OVER).remove(K_PHONE_LIMIT).remove(K_ACCOUNT).apply()
     }
 }

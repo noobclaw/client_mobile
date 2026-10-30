@@ -16,6 +16,7 @@ import com.noobclaw.mobile.a11y.NcAccessibilityService
 import com.noobclaw.mobile.engine.ScriptEngine
 import com.noobclaw.mobile.net.Api
 import com.noobclaw.mobile.util.Prefs
+import com.noobclaw.mobile.util.tr
 import com.noobclaw.mobile.util.RunLog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -45,7 +46,7 @@ class RunService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startInForeground(getString(R.string.app_name) + " · 待命中")
+        startInForeground(getString(R.string.app_name) + " · " + tr("待命中", "Standing by"))
         when (intent?.action) {
             ACTION_STOP_RUN -> {
                 if (currentRun?.isActive == true) stopCurrentRun("user_stopped")
@@ -86,7 +87,7 @@ class RunService : Service() {
             .setContentTitle(getString(R.string.app_name))
             .setContentText(text)
             .setOngoing(true)
-            .addAction(0, "停止", android.app.PendingIntent.getService(
+            .addAction(0, tr("停止", "Stop"), android.app.PendingIntent.getService(
                 this, 1, Intent(this, RunService::class.java).setAction(ACTION_STOP_RUN),
                 android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT))
             .build()
@@ -94,11 +95,11 @@ class RunService : Service() {
     private suspend fun mainLoop() {
         var tick = 0
         while (scope.isActive) {
-            runCatching { heartbeat() }.onFailure { RunLog.w("心跳失敗：${it.message}") }
+            runCatching { heartbeat() }.onFailure { RunLog.w(tr("心跳失敗：", "Heartbeat failed: ") + it.message) }
             // Task list from the server every 4th tick (60 s); schedule check every tick on the cached list.
             val fetch = tick % TASK_REFRESH_TICKS == 0
             tick++
-            runCatching { refreshTaskAndMaybeRun(fetch) }.onFailure { RunLog.w("排程檢查失敗：${it.message}") }
+            runCatching { refreshTaskAndMaybeRun(fetch) }.onFailure { RunLog.w(tr("排程檢查失敗：", "Schedule check failed: ") + it.message) }
             runCatching { uploadLogs() }
             delay(HEARTBEAT_MS)
         }
@@ -115,7 +116,7 @@ class RunService : Service() {
             } catch (e2: com.noobclaw.mobile.net.ApiException) {
                 if (e2.code != "phone_limit") throw e2
                 // 被移除後名額已被別的手機佔了:標記超額(首頁提示),不再每 15 秒報錯
-                if (!Prefs.overLimit) RunLog.w("超出會員可用手機數，這臺手機暫停")
+                if (!Prefs.overLimit) RunLog.w(tr("超出會員可用手機數，這臺手機暫停", "Over the plan's phone limit — this phone is paused"))
                 Prefs.overLimit = true
                 Prefs.phoneLimit = e2.body.optInt("limit", Prefs.phoneLimit)
                 return
@@ -145,11 +146,11 @@ class RunService : Service() {
             val c = cmds.optJSONObject(i) ?: continue
             val taskId = c.optString("task_id").takeIf { it.isNotEmpty() && it != "null" }
             val action = c.optString("action")
-            if (action != "stop" && Prefs.overLimit) { RunLog.w("超出會員可用手機數，不運行"); continue }
+            if (action != "stop" && Prefs.overLimit) { RunLog.w(tr("超出會員可用手機數，不運行", "Over the plan's phone limit — not running")); continue }
             when (action) {
                 "stop" -> if (currentRun?.isActive == true) stopCurrentRun("user_stopped")
-                "run" -> { RunLog.i("電腦端要求運行"); refreshTasks(); startRun("remote-" + System.currentTimeMillis(), dryRun = false, taskId = taskId) }
-                "dry_run" -> { RunLog.i("電腦端要求試跑"); refreshTasks(); startRun("remote-dry-" + System.currentTimeMillis(), dryRun = true, taskId = taskId) }
+                "run" -> { RunLog.i(tr("電腦端要求運行", "Run requested from the desktop")); refreshTasks(); startRun("remote-" + System.currentTimeMillis(), dryRun = false, taskId = taskId) }
+                "dry_run" -> { RunLog.i(tr("電腦端要求試跑", "Dry run requested from the desktop")); refreshTasks(); startRun("remote-dry-" + System.currentTimeMillis(), dryRun = true, taskId = taskId) }
             }
         }
     }
@@ -169,7 +170,7 @@ class RunService : Service() {
         if (Prefs.token.isEmpty()) return
         // Offline: keep using the last list we got, so a network blip does not skip a slot.
         if (fetch) runCatching { Api.fetchTasks().optJSONArray("tasks") }.onSuccess { if (it != null) Prefs.tasksJson = it.toString() }
-            .onFailure { RunLog.w("拉取任務失敗，用本地緩存：${it.message}") }
+            .onFailure { RunLog.w(tr("拉取任務失敗，用本地緩存：", "Couldn't fetch tasks, using the local copy: ") + it.message) }
         if (currentRun?.isActive == true) return
         if (Prefs.overLimit) return // 超出會員可用手機數:不排程
         // One run at a time: the first due task runs now, the next one on a later heartbeat (catch-up window 2 h).
@@ -183,13 +184,13 @@ class RunService : Service() {
     }
 
     private fun startRun(slotKey: String, dryRun: Boolean, taskId: String?) {
-        if (currentRun?.isActive == true) { RunLog.w("已有任務在運行，忽略這次觸發"); return }
+        if (currentRun?.isActive == true) { RunLog.w(tr("已有任務在運行，忽略這次觸發", "A task is already running; ignored")); return }
         currentRun = scope.launch { runOnce(slotKey, dryRun, taskId) }
     }
 
     private fun stopCurrentRun(reason: String) {
         engine?.abortRequested = true
-        RunLog.i("停止：$reason")
+        RunLog.i(tr("停止：", "Stopped: ") + reason)
         val job = currentRun
         scope.launch { delay(3000); job?.cancel() } // FR-10: everything stops within 3 s (only the run being stopped)
     }
@@ -200,19 +201,19 @@ class RunService : Service() {
         val report = JSONObject().put("run_id", runId).put("slot", slotKey).put("dry_run", dryRun)
         try {
             val pre = preconditions()
-            if (pre != null) { report.put("status", "skipped").put("reason", pre); RunLog.w("跳過運行：$pre", runId); return }
+            if (pre != null) { report.put("status", "skipped").put("reason", pre); RunLog.w(tr("跳過運行：", "Skipped: ") + pre, runId); return }
             // A task deleted in the meantime is skipped, never swapped for another one.
             val task = (if (taskId == null) Prefs.tasks().firstOrNull() else Prefs.tasks().firstOrNull { it.optString("id") == taskId })
-                ?: run { report.put("status", "skipped").put("reason", "no_task"); RunLog.w("跳過運行：沒有任務", runId); return }
+                ?: run { report.put("status", "skipped").put("reason", "no_task"); RunLog.w(tr("跳過運行：沒有任務", "Skipped: no task"), runId); return }
             runningTaskId = task.optString("id")
             report.put("task_id", runningTaskId)
             val binding = runCatching { JSONObject(Prefs.bindingJson) }.getOrElse { JSONObject() } // filled by the script (setAccount)
             report.put("late_sec", Schedule.lateSeconds(task, slotKey, ZonedDateTime.now()))
             val (pkg, ver) = targetAppInfo() ?: run { report.put("status", "skipped").put("reason", "app_not_installed"); return }
-            RunLog.i("開始運行（${if (dryRun) "乾跑" else "正式"}）· $pkg v$ver", runId)
+            RunLog.i(tr("開始運行", "Run started") + "（" + (if (dryRun) tr("試跑", "dry run") else tr("正式", "live")) + "）· $pkg v$ver", runId)
             val pack = ScriptLoader.load(task.optString("script_id", "tiktok_comment_like"), ver)
             report.put("script_version", pack.version)
-            startInForeground("運行中 · ${pack.id}")
+            startInForeground(tr("運行中", "Running") + " · ${pack.id}")
             overlay = FloatingStop(this) { startService(Intent(this, RunService::class.java).setAction(ACTION_STOP_RUN)) }.also { it.show() }
             val e = ScriptEngine(applicationContext, pack, task.put("target_package", pkg), binding, dryRun, runId)
             engine = e
@@ -221,15 +222,15 @@ class RunService : Service() {
             // The run row has its own reason column: fill it from the script result (time, caps_reached, profile_tab_not_found …).
             result.optString("reason").takeIf { it.isNotEmpty() }?.let { report.put("reason", it.take(200)) }
             handleChallenge(result, runId, dryRun)
-            RunLog.i("運行結束：${result.optString("status", "done")} ${result.optString("reason")}", runId)
+            RunLog.i(tr("運行結束：", "Run finished: ") + "${result.optString("status", "done")} ${result.optString("reason")}", runId)
         } catch (e: ScriptLoader.Rejected) {
             report.put("status", "rejected").put("reason", e.reason)
-            RunLog.e("劇本被拒絕：${e.reason}", runId)
+            RunLog.e(tr("劇本被拒絕：", "Script refused: ") + e.reason, runId)
         } catch (e: kotlinx.coroutines.CancellationException) {
             report.put("status", "stopped").put("reason", "user_stopped")
         } catch (e: Exception) {
             report.put("status", "error").put("reason", (e.message ?: e.javaClass.simpleName).take(200))
-            RunLog.e("運行出錯：${e.message}", runId)
+            RunLog.e(tr("運行出錯：", "Run error: ") + e.message, runId)
         } finally {
             engine = null
             runningTaskId = null
@@ -240,7 +241,7 @@ class RunService : Service() {
                 runCatching { Api.reportRun(report) }
                 runCatching { uploadLogs() } // also when automation is off (manual / dry runs)
             }
-            if (autostart()) startInForeground(getString(R.string.app_name) + " · 待命中")
+            if (autostart()) startInForeground(getString(R.string.app_name) + " · " + tr("待命中", "Standing by"))
             else { currentRun = null; stopIfIdle() } // a manual run with automation off: nothing to stand by for
         }
     }
@@ -297,7 +298,7 @@ class RunService : Service() {
             else -> 24L
         }
         Prefs.cooldownUntil = System.currentTimeMillis() + hours * 3600_000
-        RunLog.w("遇到平台驗證（$kind），已停止，冷卻 $hours 小時。請在這台手機上手動處理。", runId)
+        RunLog.w(tr("遇到平台驗證（$kind），已停止，冷卻 $hours 小時。請在這臺手機上手動處理。", "TikTok asked for verification ($kind): stopped, cooling down $hours h. Please handle it on this phone."), runId)
         if (!dryRun) runCatching { Api.notify("challenge:$kind", "TikTok 出現驗證（$kind），任務已停止並冷卻 $hours 小時，請在這台雲手機上手動處理。") }
     }
 

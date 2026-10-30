@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">NoobClaw Mobile</string>
+    <string name="a11y_label">NoobClaw Mobile 自动化</string>
+    <string name="a11y_description">只用于在 TikTok 里执行你自己设置的任务（点赞、评论）。只读取 TikTok 的界面内容，不读取其他 App、私信、短信或通讯录。可随时在这里关闭。</string>
+    <string name="notif_channel">运行中的任务</string>
+</resources>

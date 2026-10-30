@@ -20,7 +20,7 @@ class FloatingStop(private val ctx: Context, private val onStop: () -> Unit) {
     fun show() = main.post {
         if (view != null || !Settings.canDrawOverlays(ctx)) return@post
         val tv = TextView(ctx).apply {
-            text = "■ 停止"
+            text = com.noobclaw.mobile.util.tr("■ 停止", "■ Stop")
             setTextColor(Color.WHITE)
             textSize = 14f
             setPadding(36, 22, 36, 22)
