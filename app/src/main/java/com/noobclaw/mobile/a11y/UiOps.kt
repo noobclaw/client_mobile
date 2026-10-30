@@ -239,6 +239,7 @@ class UiOps(private val svc: () -> NcAccessibilityService?) {
                 .put("desc", n.contentDescription?.toString().orEmpty().take(80))
                 .put("b", "${r.left},${r.top},${r.right},${r.bottom}")
             if (n.isClickable) o.put("click", true)
+            if (n.isScrollable) o.put("scroll", true)
             if (n.isSelected) o.put("sel", true)
             val kids = JSONArray()
             if (depth < 40) {

@@ -178,6 +178,8 @@ class RunService : Service() {
             engine = e
             val result = e.run()
             report.put("status", result.optString("status", "done")).put("result", result)
+            // The run row has its own reason column: fill it from the script result (time, caps_reached, profile_tab_not_found …).
+            result.optString("reason").takeIf { it.isNotEmpty() }?.let { report.put("reason", it.take(200)) }
             handleChallenge(result, runId, dryRun)
             RunLog.i("運行結束：${result.optString("status", "done")} ${result.optString("reason")}", runId)
         } catch (e: ScriptLoader.Rejected) {

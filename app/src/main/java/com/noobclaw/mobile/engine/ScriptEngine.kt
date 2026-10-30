@@ -147,7 +147,8 @@ const ctx = Object.freeze({
     next: (limit) => __call('leadsNext', { limit: limit || 20 }),
     mark: (handle, status, action, note) => __call('leadsMark', { handle, status, action: action || '', note: String(note || '') }),
   }),
-  openApp: (pkg) => __call('openApp', { pkg }),
+  // fresh=true restarts the app on its home screen (clears the back stack left by earlier deep links).
+  openApp: (pkg, fresh) => __call('openApp', { pkg, fresh: fresh === true }),
   activePackage: () => __call('activePackage'),
   screen: () => __call('screen'),
   appVersion: (pkg) => __call('appVersion', { pkg }),
@@ -278,8 +279,9 @@ const ctx = Object.freeze({
                     if (!A11yGuard.isTarget(pkg)) return err("not_allowed", "guard_blocked")
                     val intent = appCtx.packageManager.getLaunchIntentForPackage(pkg)
                         ?: return err("app_not_installed", "app_not_installed")
-                    appCtx.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                    ok(true)
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    if (a.optBoolean("fresh", false)) intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK)
+                    runCatching { appCtx.startActivity(intent) }.fold({ ok(true) }, { err("open_failed", "open_failed") })
                 }
                 "sleep" -> {
                     var left = a.optLong("ms", 0).coerceIn(0, 10 * 60_000)
