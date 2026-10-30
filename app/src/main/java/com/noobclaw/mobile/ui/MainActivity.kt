@@ -8,7 +8,6 @@ import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
 import android.text.InputType
-import android.view.View
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
@@ -138,158 +137,150 @@ class MainActivity : AppCompatActivity() {
     }
 
     // ---------- main ----------
+    // One screen, top to bottom: (setup, only while something is missing) → what to do → how much → start / stop → recent log.
+
+    private var pickedScript: String? = null
+    private var pickedLevel: String? = null
+    private var showAllLog = false
+
     private fun renderMain() {
-        label("NoobClaw Mobile v${BuildConfig.VERSION_NAME}（${BuildConfig.VERSION_CODE}）")
-        title("這台手機")
-        renderPermissions()
+        title("NoobClaw")
+        val setupDone = renderSetup()
+        if (!setupDone) return
         renderTask()
-        renderControls()
-        title("運行日誌")
-        logView = TextView(this).apply { textSize = 12f }.also { root.addView(it) }
-        RunLog.recent().takeLast(60).forEach { appendLog(it) }
+        renderLog()
+        renderFooter()
     }
 
-    private fun renderPermissions() {
+    /** Shows only what is still missing, one button each. Returns true when everything is ready. */
+    private fun renderSetup(): Boolean {
         val a11y = NcAccessibilityService.isRunning
-        label((if (a11y) "✅" else "❌") + " 無障礙服務")
-        if (!a11y) button("去開啟無障礙服務") { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
         val overlay = Settings.canDrawOverlays(this)
-        label((if (overlay) "✅" else "❌") + " 懸浮窗（運行時的停止按鈕）")
-        if (!overlay) button("去開啟懸浮窗") {
+        val battery = getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)
+        if (a11y && overlay && battery) return true
+        label("先完成 3 步設置（只需一次），按下面的按鈕逐個打開：")
+        if (!a11y) button("① 打開「無障礙服務」→ 找到 NoobClaw 打開") { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+        if (!overlay) button("② 允許「顯示在其他應用上層」") {
             startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
         }
-        val pm = getSystemService(PowerManager::class.java)
-        val battery = pm.isIgnoringBatteryOptimizations(packageName)
-        label((if (battery) "✅" else "❌") + " 關閉電池優化（避免後台被殺）")
-        if (!battery) button("去關閉電池優化") {
+        if (!battery) button("③ 允許後台運行（不受電池優化限制）") {
             startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
         }
+        label("全部打開後回到這裡。")
+        renderFooter()
+        return false
     }
 
     private fun multi(hint: String, value: String) = EditText(this).apply {
         this.hint = hint; setText(value); minLines = 3; isSingleLine = false
         inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
     }.also { root.addView(it) }
-    private fun lines(e: EditText) = JSONArray().also { a ->
-        e.text.toString().split('\n', ',', '，').map { it.trim() }.filter { it.isNotEmpty() }.distinct().forEach { a.put(it) }
-    }
     private fun joinArr(a: JSONArray?) = if (a == null) "" else (0 until a.length()).joinToString("\n") { a.optString(it) }
     private fun check(t: String, v: Boolean) = CheckBox(this).apply { text = t; isChecked = v }.also { root.addView(it) }
 
-    /** Which of the two MVP scripts the task editor shows; defaults to the saved task's script. */
-    private var editingScript: String? = null
+    /** Daily amounts per level: likes, comments/replies, follows, new leads. */
+    private data class Level(val likes: Int, val comments: Int, val follows: Int, val leads: Int)
+    private fun levelOf(script: String, l: String) = when (script) {
+        "tiktok_comment_like" -> when (l) { "low" -> Level(30, 5, 0, 0); "high" -> Level(300, 30, 0, 0); else -> Level(100, 15, 0, 0) }
+        else -> when (l) { "low" -> Level(10, 5, 10, 10); "high" -> Level(100, 30, 50, 100); else -> Level(30, 15, 30, 30) }
+    }
 
     private fun renderTask() {
         val t = runCatching { JSONObject(Prefs.taskJson) }.getOrElse { JSONObject() }
-        val script = editingScript ?: t.optString("script_id").ifEmpty { "tiktok_comment_like" }
+        val script = pickedScript ?: t.optString("script_id").ifEmpty { "tiktok_comment_like" }
         val same = t.optString("script_id") == script
         val c = if (same) (t.optJSONObject("config") ?: JSONObject()) else JSONObject()
-        title("任務")
-        button((if (script == "tiktok_comment_like") "● " else "○ ") + "TikTok 評論區點讚評論") { editingScript = "tiktok_comment_like"; render() }
-        button((if (script == "tiktok_lead_engage") "● " else "○ ") + "TikTok 定向獲客") { editingScript = "tiktok_lead_engage"; render() }
+        val level = pickedLevel ?: c.optString("level").ifEmpty { "mid" }
 
-        var save: () -> JSONObject
-        if (script == "tiktok_comment_like") {
-            val keywordsMode = c.optString("comment_mode") == "keywords"
-            val precise = check("精準模式（粘貼作品或主頁鏈接）；不勾＝關鍵詞模式", !keywordsMode)
-            label("作品 / 主頁鏈接（每行一條，最多 20 條）")
-            val urls = multi("https://www.tiktok.com/@xxx/video/123…", joinArr(c.optJSONArray("urls")))
-            label("關鍵詞（關鍵詞模式用，每行一個）")
-            val kws = multi("例如：coffee shop", joinArr(c.optJSONArray("keywords")))
-            val like = check("給留言點讚", c.optBoolean("cl_do_like", true))
-            val reply = check("用 AI 回覆留言", c.optBoolean("cl_do_reply", true))
-            label("每次最多點讚（上限 1000）")
-            val maxLikes = field("300", (if (same) t.optInt("max_likes", 300) else 300).toString(), number = true)
-            label("每次最多回覆（上限 300）")
-            val maxComments = field("30", (if (same) t.optInt("max_comments", 30) else 30).toString(), number = true)
-            save = {
-                JSONObject().put("max_likes", maxLikes.text.toString().toIntOrNull() ?: 300)
-                    .put("max_comments", maxComments.text.toString().toIntOrNull() ?: 30)
-                    .put("config", JSONObject().put("comment_mode", if (precise.isChecked) "precise" else "keywords")
-                        .put("urls", lines(urls)).put("keywords", lines(kws))
-                        .put("cl_do_like", like.isChecked).put("cl_do_reply", reply.isChecked))
+        label("要做什麼")
+        button((if (script == "tiktok_comment_like") "● " else "○ ") + "給評論點讚 + AI 回覆") { pickedScript = "tiktok_comment_like"; render() }
+        button((if (script == "tiktok_lead_engage") "● " else "○ ") + "找客戶：關注、點讚、評論評論區裡的人") { pickedScript = "tiktok_lead_engage"; render() }
+
+        label("在哪裡做（每行一個）")
+        val prev = if (same) listOf(c.optJSONArray("urls"), c.optJSONArray("seed_accounts"), c.optJSONArray("keywords"))
+            .joinToString("\n") { joinArr(it) }.trim() else ""
+        val where = multi(
+            if (script == "tiktok_comment_like") "關鍵詞，或作品 / 主頁鏈接\n例如：latte art" else "關鍵詞，或同行帳號（@開頭）\n例如：latte art 或 @rival_shop",
+            prev,
+        )
+
+        label("每天做多少")
+        val names = listOf("low" to "少", "mid" to "中", "high" to "多")
+        LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            names.forEach { (k, n) ->
+                addView(Button(this@MainActivity).apply {
+                    text = (if (k == level) "● " else "") + n
+                    setOnClickListener { pickedLevel = k; render() }
+                }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
             }
-        } else {
-            val kwMode = c.optString("mode") == "keywords"
-            val accounts = check("同行帳號模式（粘貼帳號或作品鏈接）；不勾＝關鍵詞模式", !kwMode)
-            label("同行帳號 / 作品鏈接（每行一個，例如 @rival 或鏈接）")
-            val seeds = multi("@rival_shop", joinArr(c.optJSONArray("seed_accounts")))
-            label("關鍵詞（關鍵詞模式用，每行一個）")
-            val kws = multi("例如：latte art", joinArr(c.optJSONArray("keywords")))
-            label("每次最多新收錄潛客（上限 300）")
-            val perRun = field("100", c.optInt("leads_per_run", 100).toString(), number = true)
-            val like = check("點讚他的第一條作品", c.optBoolean("lead_do_like", true))
-            val follow = check("關注", c.optBoolean("lead_do_follow", true))
-            val comment = check("AI 評論他的第一條作品", c.optBoolean("lead_do_comment", true))
-            label("每次最多點讚 / 關注 / 評論（上限 500 / 100 / 300）")
-            val maxLikes = field("點讚", (if (same) t.optInt("max_likes", 300) else 300).toString(), number = true)
-            val maxFollows = field("關注", (if (same) t.optInt("max_follows", 0) else 0).toString(), number = true)
-            val maxComments = field("評論", (if (same) t.optInt("max_comments", 0) else 0).toString(), number = true)
-            save = {
-                JSONObject().put("max_likes", maxLikes.text.toString().toIntOrNull() ?: 300)
-                    .put("max_follows", maxFollows.text.toString().toIntOrNull() ?: 0)
-                    .put("max_comments", maxComments.text.toString().toIntOrNull() ?: 0)
-                    .put("config", JSONObject().put("mode", if (accounts.isChecked) "accounts" else "keywords")
-                        .put("seed_accounts", lines(seeds)).put("keywords", lines(kws))
-                        .put("leads_per_run", perRun.text.toString().toIntOrNull() ?: 100)
-                        .put("lead_do_like", like.isChecked).put("lead_do_follow", follow.isChecked).put("lead_do_comment", comment.isChecked))
+        }.also { root.addView(it) }
+        val lv = levelOf(script, level)
+        label(if (script == "tiktok_comment_like") "每次最多點讚 ${lv.likes} 條、回覆 ${lv.comments} 條"
+              else "每次最多找 ${lv.leads} 個新客戶，關注 ${lv.follows}、點讚 ${lv.likes}、評論 ${lv.comments}")
+
+        label("你的帳號是做什麼的（選填，AI 會按這個語氣寫）")
+        val persona = field("例如：東京的咖啡店，語氣友善", if (same) t.optString("persona") else "")
+        val auto = check("每天自動做（早上 9:30、晚上 8:00）", same && t.optBoolean("enabled", false))
+
+        fun buildTask(): JSONObject? {
+            val items = where.text.toString().split('\n', ',', '，').map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+            if (items.isEmpty()) { toast("先填「在哪裡做」"); return null }
+            val links = items.filter { it.startsWith("http", true) || it.startsWith("@") }
+            val words = items - links.toSet()
+            val cfg = JSONObject().put("level", level)
+            if (script == "tiktok_comment_like") {
+                // "@shop" means that account's profile page.
+                val urls = links.map { if (it.startsWith("@")) "https://www.tiktok.com/$it" else it }
+                cfg.put("comment_mode", if (urls.isNotEmpty()) "precise" else "keywords")
+                    .put("urls", JSONArray(urls)).put("keywords", JSONArray(words))
+                    .put("cl_do_like", true).put("cl_do_reply", true)
+            } else {
+                cfg.put("mode", if (links.isNotEmpty()) "accounts" else "keywords")
+                    .put("seed_accounts", JSONArray(links)).put("keywords", JSONArray(words))
+                    .put("leads_per_run", lv.leads)
+                    .put("lead_do_like", true).put("lead_do_follow", true).put("lead_do_comment", true)
             }
+            return JSONObject().put("script_id", script).put("config", cfg)
+                .put("max_likes", lv.likes).put("max_comments", lv.comments).put("max_follows", lv.follows)
+                .put("enabled", auto.isChecked).put("slots", JSONArray(listOf("09:30", "20:00")))
+                .put("tz", ZoneId.systemDefault().id).put("max_run_minutes", 60)
+                .put("persona", persona.text.toString().take(400))
         }
 
-        val enabled = check("啟用定時運行", same && t.optBoolean("enabled", false))
-        label("每天運行時間（最多 2 個，逗號分隔，24 小時制）")
-        val slots = field("09:30,20:00", if (same) joinArr(t.optJSONArray("slots")).replace("\n", ",") else "")
-        label("時區（任務按這個時區運行，不看雲手機自己的時鐘）")
-        val tz = field("例如 America/Los_Angeles", t.optString("tz", ZoneId.systemDefault().id))
-        label("每次最長運行分鐘")
-        val minutes = field("60", (if (same) t.optInt("max_run_minutes", 60) else 60).toString(), number = true)
-        label("帳號人設（回覆/評論會按這個語氣寫，可留空）")
-        val persona = field("例如：在洛杉磯開咖啡店的店主，語氣友善", if (same) t.optString("persona") else "")
-        button("保存任務") {
-            val slotArr = JSONArray()
-            slots.text.toString().split(',', '，').map { it.trim() }.filter { it.matches(Regex("^\\d{1,2}:\\d{2}$")) }
-                .take(2).forEach { slotArr.put(it.padStart(5, '0')) }
-            val tzId = tz.text.toString().trim()
-            if (runCatching { ZoneId.of(tzId) }.isFailure) { toast("時區不對，例如 Asia/Tokyo"); return@button }
-            val task = save()
-                .put("script_id", script)
-                .put("enabled", enabled.isChecked)
-                .put("slots", slotArr)
-                .put("tz", tzId)
-                .put("max_run_minutes", minutes.text.toString().toIntOrNull() ?: 60)
-                .put("persona", persona.text.toString().take(400))
+        fun saveThen(action: String?) {
+            val task = buildTask() ?: return
             lifecycleScope.launch {
                 try {
                     val saved = Api.saveTask(task).optJSONObject("task") ?: task
                     Prefs.taskJson = saved.toString()
-                    editingScript = null
-                    toast("已保存（服務器會按上限校正數值）")
+                    pickedScript = null; pickedLevel = null
+                    getSharedPreferences("nc_mobile", MODE_PRIVATE).edit().putBoolean("autostart", auto.isChecked).apply()
+                    if (auto.isChecked) RunService.start(this@MainActivity) // stand by for the daily times
+                    if (action != null) RunService.start(this@MainActivity, action)
+                    toast(if (action == null) "已保存" else "開始了，可以切到後台")
                     render()
                 } catch (e: Exception) { toast("保存失敗：${e.message}") }
             }
         }
+
+        button("▶ 開始") { saveThen(RunService.ACTION_RUN_NOW) }
+        button("先試一次（只看流程，不點讚、不評論、不扣費）") { saveThen(RunService.ACTION_DRY_RUN) }
+        button("■ 停止") {
+            RunService.start(this, RunService.ACTION_STOP_RUN)
+            if (!auto.isChecked) RunService.start(this, RunService.ACTION_SHUTDOWN)
+        }
     }
 
-    private fun renderControls() {
-        title("控制")
-        button("開始自動運行（常駐待命）") {
-            getSharedPreferences("nc_mobile", MODE_PRIVATE).edit().putBoolean("autostart", true).apply()
-            RunService.start(this)
-            toast("已開始待命，到點自動運行")
-        }
-        button("立即運行一次") { RunService.start(this, RunService.ACTION_RUN_NOW) }
-        button("乾跑一次（走流程但不點讚、不發評論、不扣費）") { RunService.start(this, RunService.ACTION_DRY_RUN) }
-        button("停止當前運行") { RunService.start(this, RunService.ACTION_STOP_RUN) }
-        button("關閉自動運行") {
-            getSharedPreferences("nc_mobile", MODE_PRIVATE).edit().putBoolean("autostart", false).apply()
-            RunService.start(this, RunService.ACTION_SHUTDOWN)
-        }
-        button("抓取 TikTok 畫面結構（按下後 8 秒內切到 TikTok）") {
-            if (!NcAccessibilityService.isRunning) { toast("先開啟無障礙服務"); return@button }
-            RunService.start(this, RunService.ACTION_CAPTURE)
-            toast("8 秒後抓取，現在切到 TikTok")
-        }
-        button("發送診斷（生成客服碼）") {
+    private fun renderLog() {
+        label("最近記錄")
+        logView = TextView(this).apply { textSize = 12f }.also { root.addView(it) }
+        RunLog.recent().takeLast(if (showAllLog) 200 else 8).forEach { appendLog(it) }
+        if (!showAllLog) button("查看全部記錄") { showAllLog = true; render() }
+    }
+
+    private fun renderFooter() {
+        button("遇到問題？發給客服") {
             lifecycleScope.launch {
                 try {
                     val logs = JSONArray()
@@ -307,7 +298,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
         button("退出登錄") { Prefs.logout(); RunService.start(this, RunService.ACTION_SHUTDOWN); render() }
-        label("設備 ID：${Prefs.deviceId.take(8)} · v${BuildConfig.VERSION_NAME}").visibility = View.VISIBLE
+        label("v${BuildConfig.VERSION_NAME}（${BuildConfig.VERSION_CODE}）")
     }
 
     private fun appendLog(l: RunLog.Line) {
