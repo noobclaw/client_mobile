@@ -112,7 +112,7 @@ class RunService : Service() {
     }
 
     private suspend fun sendHeartbeat(tk: Pair<String, Long>?) {
-        Api.heartbeat(
+        val r = Api.heartbeat(
             JSONObject()
                 .put("app_ver", com.noobclaw.mobile.BuildConfig.VERSION_NAME)
                 .put("android_sdk", Build.VERSION.SDK_INT)
@@ -123,6 +123,21 @@ class RunService : Service() {
                 .put("running", currentRun?.isActive == true)
                 .put("cooldown_until", Prefs.cooldownUntil)
         )
+        // Run / stop requests sent from the desktop app ("我的手機").
+        val cmds = r.optJSONArray("commands") ?: return
+        for (i in 0 until cmds.length()) {
+            val c = cmds.optJSONObject(i) ?: continue
+            val taskId = c.optString("task_id").takeIf { it.isNotEmpty() && it != "null" }
+            when (c.optString("action")) {
+                "stop" -> if (currentRun?.isActive == true) stopCurrentRun("user_stopped")
+                "run" -> { RunLog.i("電腦端要求運行"); refreshTasks(); startRun("remote-" + System.currentTimeMillis(), dryRun = false, taskId = taskId) }
+                "dry_run" -> { RunLog.i("電腦端要求試跑"); refreshTasks(); startRun("remote-dry-" + System.currentTimeMillis(), dryRun = true, taskId = taskId) }
+            }
+        }
+    }
+
+    private suspend fun refreshTasks() {
+        runCatching { Api.fetchTasks().optJSONArray("tasks") }.getOrNull()?.let { Prefs.tasksJson = it.toString() }
     }
 
     private suspend fun uploadLogs() {
@@ -275,8 +290,8 @@ class RunService : Service() {
         return null
     }
 
-    private fun autostart(): Boolean =
-        getSharedPreferences("nc_mobile", Context.MODE_PRIVATE).getBoolean("autostart", false)
+    /** Logged in and consented → stand by: daily times run, and the desktop app can start / stop runs. */
+    private fun autostart(): Boolean = Prefs.token.isNotEmpty() && Prefs.consentVersion >= CONSENT_VERSION
 
     private fun doneSlots(): Set<String> =
         getSharedPreferences("nc_slots", Context.MODE_PRIVATE).getStringSet("done", emptySet()) ?: emptySet()

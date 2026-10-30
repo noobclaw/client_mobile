@@ -5,12 +5,11 @@ import android.content.Context
 import android.content.Intent
 import com.noobclaw.mobile.util.Prefs
 
-/** Restarts the standby service after a reboot, only if the user had started automation before. */
+/** Restarts the standby service after a reboot when the user is logged in. */
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
-        val autostart = context.getSharedPreferences("nc_mobile", Context.MODE_PRIVATE).getBoolean("autostart", false)
-        if (autostart && Prefs.token.isNotEmpty()) RunService.start(context)
+        if (Prefs.token.isNotEmpty()) RunService.start(context)
     }
 }
 

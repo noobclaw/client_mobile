@@ -90,6 +90,7 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         reportLastCrash()
+        if (Prefs.token.isNotEmpty() && Prefs.consentVersion >= RunService.CONSENT_VERSION) RunService.start(this) // stand by
         render()
         RunLog.onLine(logListener)
         main.post(ticker)
@@ -224,6 +225,7 @@ class MainActivity : AppCompatActivity() {
         add(ui.primary("同意") {
             Prefs.diagOptIn = diag
             Prefs.consentVersion = RunService.CONSENT_VERSION
+            RunService.start(this) // stand by
             render()
         }, bottom = 10)
         add(ui.link("退出登錄", C.SUB) { Prefs.logout(); render() }.apply { gravity = Gravity.CENTER })
@@ -585,9 +587,7 @@ class MainActivity : AppCompatActivity() {
                 val arr = JSONArray(); list.forEach { arr.put(JSONObject(it.toString()).apply { remove("_editing"); remove("_level") }) }
                 val saved = Api.saveTasks(arr).optJSONArray("tasks") ?: arr
                 Prefs.tasksJson = saved.toString()
-                val anyAuto = Prefs.tasks().any { it.optBoolean("enabled") }
-                getSharedPreferences("nc_mobile", MODE_PRIVATE).edit().putBoolean("autostart", anyAuto).apply()
-                if (anyAuto) RunService.start(this@MainActivity) // stand by for the daily times
+                RunService.start(this@MainActivity) // stand by: daily times + runs started from the desktop app
                 draft = null
                 toast(msg)
                 go(Screen.HOME)
