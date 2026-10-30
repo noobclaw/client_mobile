@@ -70,6 +70,10 @@ object Api {
     suspend fun bindPlatform(binding: JSONObject) = post("/api/mobile/bindings", binding.put("device_id", Prefs.deviceId))
     suspend fun fetchTask() = get("/api/mobile/tasks/current?device_id=${Prefs.deviceId}")
     suspend fun saveTask(task: JSONObject) = put("/api/mobile/tasks/current", task.put("device_id", Prefs.deviceId))
+    /** The phone's task list (app ≥ 0.2). */
+    suspend fun fetchTasks() = get("/api/mobile/tasks?device_id=${Prefs.deviceId}")
+    suspend fun saveTasks(tasks: org.json.JSONArray) =
+        put("/api/mobile/tasks", JSONObject().put("tasks", tasks).put("device_id", Prefs.deviceId))
     suspend fun fetchScript(id: String, appVer: Long, capVer: Int) =
         get("/api/mobile/scenarios/$id?appVer=$appVer&capVer=$capVer&device_id=${Prefs.deviceId}" +
             // Only debug builds without a pinned key can run unsigned test overrides.

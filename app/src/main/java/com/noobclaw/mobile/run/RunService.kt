@@ -51,8 +51,8 @@ class RunService : Service() {
                 if (currentRun?.isActive == true) stopCurrentRun("user_stopped")
                 else if (!autostart() && captureJob?.isActive != true) { stopSelf(); return START_NOT_STICKY }
             }
-            ACTION_RUN_NOW -> startRun(slotKey = "manual-" + System.currentTimeMillis(), dryRun = false)
-            ACTION_DRY_RUN -> startRun(slotKey = "dry-" + System.currentTimeMillis(), dryRun = true)
+            ACTION_RUN_NOW -> startRun("manual-" + System.currentTimeMillis(), dryRun = false, taskId = intent.getStringExtra(EXTRA_TASK_ID))
+            ACTION_DRY_RUN -> startRun("dry-" + System.currentTimeMillis(), dryRun = true, taskId = intent.getStringExtra(EXTRA_TASK_ID))
             ACTION_CAPTURE, ACTION_CAPTURE_NOW -> if (captureJob?.isActive != true) {
                 val wait = intent?.action == ACTION_CAPTURE
                 captureJob = scope.launch {
@@ -134,21 +134,24 @@ class RunService : Service() {
 
     private suspend fun refreshTaskAndMaybeRun() {
         if (Prefs.token.isEmpty()) return
-        // Offline: keep using the last task we got, so a network blip does not skip a slot.
-        val task = runCatching { Api.fetchTask().optJSONObject("task") }.getOrElse {
-            RunLog.w("拉取任務失敗，用本地緩存：${it.message}")
-            runCatching { JSONObject(Prefs.taskJson) }.getOrNull()
-        } ?: return
-        Prefs.taskJson = task.toString()
+        // Offline: keep using the last list we got, so a network blip does not skip a slot.
+        runCatching { Api.fetchTasks().optJSONArray("tasks") }.onSuccess { if (it != null) Prefs.tasksJson = it.toString() }
+            .onFailure { RunLog.w("拉取任務失敗，用本地緩存：${it.message}") }
         if (currentRun?.isActive == true) return
-        val due = Schedule.due(task, ZonedDateTime.now(), doneSlots()) ?: return
-        markSlotDone(due.slotKey) // mark first: a crash mid-run never re-runs the same slot
-        startRun(due.slotKey, dryRun = false)
+        // One run at a time: the first due task runs now, the next one on a later heartbeat (catch-up window 2 h).
+        for (task in Prefs.tasks()) {
+            val due = Schedule.due(task, ZonedDateTime.now(), doneSlots()) ?: continue
+            val key = due.slotKey + "#" + task.optString("id")
+            if (key in doneSlots()) continue
+            markSlotDone(key) // mark first: a crash mid-run never re-runs the same slot
+            startRun(key, dryRun = false, taskId = task.optString("id"))
+            return
+        }
     }
 
-    private fun startRun(slotKey: String, dryRun: Boolean) {
+    private fun startRun(slotKey: String, dryRun: Boolean, taskId: String?) {
         if (currentRun?.isActive == true) { RunLog.w("已有任務在運行，忽略這次觸發"); return }
-        currentRun = scope.launch { runOnce(slotKey, dryRun) }
+        currentRun = scope.launch { runOnce(slotKey, dryRun, taskId) }
     }
 
     private fun stopCurrentRun(reason: String) {
@@ -158,14 +161,17 @@ class RunService : Service() {
         scope.launch { delay(3000); job?.cancel() } // FR-10: everything stops within 3 s (only the run being stopped)
     }
 
-    private suspend fun runOnce(slotKey: String, dryRun: Boolean) {
+    private suspend fun runOnce(slotKey: String, dryRun: Boolean, taskId: String?) {
         val runId = UUID.randomUUID().toString()
         val started = System.currentTimeMillis()
         val report = JSONObject().put("run_id", runId).put("slot", slotKey).put("dry_run", dryRun)
         try {
             val pre = preconditions()
             if (pre != null) { report.put("status", "skipped").put("reason", pre); RunLog.w("跳過運行：$pre", runId); return }
-            val task = JSONObject(Prefs.taskJson)
+            val task = Prefs.tasks().firstOrNull { it.optString("id") == taskId } ?: Prefs.tasks().firstOrNull()
+                ?: run { report.put("status", "skipped").put("reason", "no_task"); RunLog.w("跳過運行：沒有任務", runId); return }
+            runningTaskId = task.optString("id")
+            report.put("task_id", runningTaskId)
             val binding = runCatching { JSONObject(Prefs.bindingJson) }.getOrElse { JSONObject() } // filled by the script (setAccount)
             report.put("late_sec", Schedule.lateSeconds(task, slotKey, ZonedDateTime.now()))
             val (pkg, ver) = targetAppInfo() ?: run { report.put("status", "skipped").put("reason", "app_not_installed"); return }
@@ -192,6 +198,7 @@ class RunService : Service() {
             RunLog.e("運行出錯：${e.message}", runId)
         } finally {
             engine = null
+            runningTaskId = null
             overlay?.hide(); overlay = null
             report.put("duration_ms", System.currentTimeMillis() - started)
             // NonCancellable: the report still goes out when the run was cancelled or the service is stopping.
@@ -241,7 +248,6 @@ class RunService : Service() {
         if (Prefs.token.isEmpty()) return "not_logged_in"
         if (Prefs.consentVersion < CONSENT_VERSION) return "consent_required"
         if (!NcAccessibilityService.isRunning) return "a11y_disabled"
-        if (Prefs.taskJson.isEmpty()) return "no_task"
         if (System.currentTimeMillis() < Prefs.cooldownUntil) return "cooldown"
         return null
     }
@@ -294,10 +300,15 @@ class RunService : Service() {
         const val ACTION_SHUTDOWN = "com.noobclaw.mobile.SHUTDOWN"
         const val ACTION_CAPTURE = "com.noobclaw.mobile.CAPTURE"
         const val ACTION_CAPTURE_NOW = "com.noobclaw.mobile.CAPTURE_NOW"
+        const val EXTRA_TASK_ID = "task_id"
 
-        fun start(ctx: Context, action: String? = null) {
+        /** Id of the task running right now (null when idle); the UI reads it to show "運行中". */
+        @Volatile var runningTaskId: String? = null
+
+        fun start(ctx: Context, action: String? = null, taskId: String? = null) {
             val i = Intent(ctx, RunService::class.java)
             if (action != null) i.action = action
+            if (taskId != null) i.putExtra(EXTRA_TASK_ID, taskId)
             ctx.startForegroundService(i)
         }
     }

@@ -41,7 +41,7 @@ object Schedule {
 
     /** Lateness in seconds for the run_started event (按時啟動率). */
     fun lateSeconds(task: JSONObject, slotKey: String, now: ZonedDateTime): Long {
-        val slot = slotKey.substringAfter('@')
+        val slot = slotKey.substringAfter('@').substringBefore('#') // "date@HH:mm#taskId"
         val date = slotKey.substringBefore('@')
         val at = runCatching { ZonedDateTime.of(LocalDate.parse(date), LocalTime.parse(slot), zone(task)) }.getOrNull() ?: return -1
         return java.time.Duration.between(at, now).seconds
