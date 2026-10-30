@@ -23,6 +23,17 @@ android {
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") } // x86_64: some cloud phones / emulators
     }
 
+    // Fixed debug key (committed on purpose, debug only): every CI build of the test APK has the same
+    // signature, so it installs over the previous one and keeps the tester's login and settings.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
