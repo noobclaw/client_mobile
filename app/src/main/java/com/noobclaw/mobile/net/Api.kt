@@ -73,6 +73,7 @@ object Api {
     suspend fun saveTask(task: JSONObject) = put("/api/mobile/tasks/current", task.put("device_id", Prefs.deviceId))
     /** The phone's task list (app ≥ 0.2). */
     suspend fun fetchTasks() = get("/api/mobile/tasks?device_id=${Prefs.deviceId}")
+        .also { Prefs.mergeLastStarted(it.optJSONObject("last_started")) } // server ≥ 2026-10-31: per-task last start (survives reinstalls)
     suspend fun saveTasks(tasks: org.json.JSONArray) =
         put("/api/mobile/tasks", JSONObject().put("tasks", tasks).put("device_id", Prefs.deviceId))
     suspend fun fetchScript(id: String, appVer: Long, capVer: Int) =

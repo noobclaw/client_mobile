@@ -133,6 +133,17 @@ object Prefs {
         ?: taskStats(taskId)?.optLong("last_started_at")?.takeIf { it > 0 } // seed from the local run history
     fun setLastStart(taskId: String, ms: Long) = sp.edit().putLong(K_LAST_START + taskId, ms).apply()
 
+    /** Seeds / updates last starts from the server's `last_started` {taskId: epoch ms} when it is newer than ours. */
+    fun mergeLastStarted(m: org.json.JSONObject?) {
+        if (m == null) return
+        val e = sp.edit()
+        m.keys().forEach { id ->
+            val v = m.optLong(id, 0L)
+            if (v > 0 && v > sp.getLong(K_LAST_START + id, 0L)) e.putLong(K_LAST_START + id, v)
+        }
+        e.apply()
+    }
+
     /** Per-task totals kept from the run reports this phone sent: {taskId: {runs, totals{}, credits, last_*}}. */
     fun taskStats(taskId: String): org.json.JSONObject? =
         runCatching { org.json.JSONObject(sp.getString(K_STATS, "{}") ?: "{}").optJSONObject(taskId) }.getOrNull()
