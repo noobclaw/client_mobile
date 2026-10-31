@@ -36,6 +36,7 @@ import com.noobclaw.mobile.util.I18n
 import com.noobclaw.mobile.util.Prefs
 import com.noobclaw.mobile.util.RunLog
 import com.noobclaw.mobile.util.tr
+import com.noobclaw.mobile.util.trf
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
@@ -89,12 +90,10 @@ class MainActivity : AppCompatActivity() {
         return platformTab
     }
 
-    private fun platformOf(t: JSONObject): String = t.optString("platform").ifEmpty {
-        val sid = t.optString("script_id")
-        if (sid.startsWith("tiktok_") || sid.isEmpty()) "tiktok" else sid.substringBefore('_')
-    }
-    /** One task per platform; the TikTok task is the first TikTok one in the list. */
-    private fun taskFor(platform: String) = Prefs.tasks().firstOrNull { platformOf(it) == platform }
+    private fun platformOf(t: JSONObject): String = Prefs.platformOf(t)
+    /** One task per platform; the TikTok task is the first TikTok one in the list (the scheduler uses the same pick). */
+    private fun taskFor(platform: String) = Prefs.primaryTasks().firstOrNull { platformOf(it) == platform }
+    private fun hm(h: Int, m: Int) = String.format(java.util.Locale.US, "%02d:%02d", h, m)
     private fun taskById(id: String?) = Prefs.tasks().firstOrNull { it.optString("id") == id }
 
     /** Default names are stored in Traditional Chinese (shared with the desktop); show them in the app's language. */
@@ -707,7 +706,7 @@ class MainActivity : AppCompatActivity() {
             0.5 -> tr("每 30 分鐘", "Every 30 min"); 1.0 -> tr("每 1 小時", "Every hour")
             else -> tr("每 ${k.hours.toInt()} 小時", "Every ${k.hours.toInt()} hours")
         }
-        is Schedule.Kind.Daily -> tr("每天 ", "Daily at ") + "%02d:%02d".format(k.at.hour, k.at.minute)
+        is Schedule.Kind.Daily -> tr("每天 ", "Daily at ") + hm(k.at.hour, k.at.minute)
         Schedule.Kind.Manual -> tr("手動", "Manual")
     }
 
@@ -716,12 +715,12 @@ class MainActivity : AppCompatActivity() {
         val z = ZoneId.systemDefault()
         val d = java.time.Instant.ofEpochMilli(ms).atZone(z)
         val today = java.time.LocalDate.now(z)
-        val hm = "%02d:%02d".format(d.hour, d.minute)
+        val clock = hm(d.hour, d.minute)
         return when (d.toLocalDate()) {
-            today -> tr("今天 ", "Today ") + hm
-            today.plusDays(1) -> tr("明天 ", "Tomorrow ") + hm
-            today.minusDays(1) -> tr("昨天 ", "Yesterday ") + hm
-            else -> "%02d/%02d ".format(d.monthValue, d.dayOfMonth) + hm
+            today -> tr("今天 ", "Today ") + clock
+            today.plusDays(1) -> tr("明天 ", "Tomorrow ") + clock
+            today.minusDays(1) -> tr("昨天 ", "Yesterday ") + clock
+            else -> String.format(java.util.Locale.US, "%02d/%02d ", d.monthValue, d.dayOfMonth) + clock
         }
     }
     private fun fmtDur(ms: Long): String {
@@ -783,9 +782,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun confirmDelete(t: JSONObject) {
         confirm(tr("刪除這個任務？", "Delete this task?"),
-            tr("「${taskName(t)}」刪除後不會再自動運行，運行記錄保留。", "\"${taskName(t)}\" will stop running. Run history is kept."),
+            trf("「{}」刪除後不會再自動運行，運行記錄保留。", "\"{}\" will stop running. Run history is kept.", taskName(t)),
             tr("刪除", "Delete")) {
-            val list = Prefs.tasks().filter { it.optString("id") != t.optString("id") }
+            // removes every task of this platform (left-over duplicates from older versions included)
+            val list = Prefs.tasks().filter { platformOf(it) != platformOf(t) }
             pushTasks(list, tr("已刪除", "Deleted"), Screen.HOME)
         }
     }
@@ -968,9 +968,11 @@ class MainActivity : AppCompatActivity() {
             rc.addView(row)
         }
         add(rc, bottom = 12)
+        val anyRun = RunService.runningTaskId != null
         add(ui.link(tr("試跑（不扣費）", "Dry run (free)"), C.SUB) {
+            if (RunService.runningTaskId != null) return@link
             withRunPerms { RunService.start(this, RunService.ACTION_DRY_RUN, id); toast(tr("試跑開始", "Dry run started")) }
-        }.apply { gravity = Gravity.CENTER })
+        }.apply { gravity = Gravity.CENTER; isEnabled = !anyRun; alpha = if (anyRun) 0.35f else 1f })
     }
 
     private fun showRunSteps(r: JSONObject) {
@@ -1227,7 +1229,7 @@ class MainActivity : AppCompatActivity() {
             }
             val k = kind
             if (k is Schedule.Kind.Daily) {
-                val tm = "%02d:%02d".format(k.at.hour, k.at.minute)
+                val tm = hm(k.at.hour, k.at.minute)
                 schedBox.addView(ui.secondary(tr("每天 $tm 運行（點擊修改）", "Runs daily at $tm (tap to change)")) {
                     TimePickerDialog(this, android.R.style.Theme_DeviceDefault_Dialog, { _, hh, mm ->
                         kind = Schedule.Kind.Daily(LocalTime.of(hh, mm)); d.put("schedule", Schedule.toJson(kind)); drawSched()
@@ -1281,8 +1283,8 @@ class MainActivity : AppCompatActivity() {
                 .put("schedule", Schedule.toJson(sc))
                 // legacy fields for apps < 0.6 (the server fills them too)
                 .put("enabled", sc !is Schedule.Kind.Manual)
-                .put("slots", JSONArray(if (sc is Schedule.Kind.Daily) kotlin.collections.listOf("%02d:%02d".format(sc.at.hour, sc.at.minute)) else emptyList<String>()))
-                .put("tz", ZoneId.systemDefault().id).put("max_run_minutes", d.optInt("max_run_minutes", 60))
+                .put("slots", JSONArray(if (sc is Schedule.Kind.Daily) kotlin.collections.listOf(hm(sc.at.hour, sc.at.minute)) else emptyList<String>()))
+                .put("tz", d.optString("tz").ifEmpty { ZoneId.systemDefault().id }) // edits keep the task's zone.put("max_run_minutes", d.optInt("max_run_minutes", 60))
                 .put("persona", d.optString("persona").take(400))
         }
 
@@ -1290,7 +1292,12 @@ class MainActivity : AppCompatActivity() {
             val t = build() ?: return@primary
             saveTask(t, if (editing) configBack else Screen.HOME) { if (!editing) runTask(t.optString("id")) }
         }, bottom = 10)
-        if (!editing) add(ui.secondary(tr("只保存", "Save only")) { build()?.let { saveTask(it, Screen.HOME) } })
+        if (!editing) add(ui.secondary(tr("只保存", "Save only")) {
+            val t = build() ?: return@secondary
+            // Saved without running: "every N hours" waits a full interval instead of starting right away.
+            if (Schedule.kind(t) is Schedule.Kind.Every) Prefs.setLastStart(t.optString("id"), System.currentTimeMillis())
+            saveTask(t, Screen.HOME)
+        })
     }
 
     // ---------- save / sync ----------
@@ -1319,8 +1326,23 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private var dedupeDone = false
+
+    /**
+     * Fetches the task list. Phones upgraded from 0.5 may still hold several tasks of one platform: keep the first of
+     * each platform, save the list back once and tell the user.
+     */
     private suspend fun syncTasks() {
         runCatching { Api.fetchTasks().optJSONArray("tasks") }.getOrNull()?.let { Prefs.tasksJson = it.toString() }
+        val all = Prefs.tasks()
+        val keep = Prefs.primaryTasks()
+        if (dedupeDone || keep.size == all.size) return
+        dedupeDone = true
+        val arr = JSONArray(); keep.forEach { arr.put(it) }
+        runCatching { Api.saveTasks(arr) }.onSuccess { r ->
+            Prefs.tasksJson = (r.optJSONArray("tasks") ?: arr).toString()
+            toast(tr("每個平台只保留 1 個任務，多出的 ${all.size - keep.size} 個已刪除", "One task per platform now: ${all.size - keep.size} extra task(s) removed"))
+        }.onFailure { dedupeDone = false }
     }
 
     // ---------- logs ----------
@@ -1347,7 +1369,9 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             try {
                 val logs = JSONArray()
-                RunLog.recent().takeLast(200).forEach { logs.put(JSONObject().put("ts", it.ts).put("level", it.level).put("msg", it.msg)) }
+                RunLog.recent().takeLast(200).forEach {
+                    logs.put(JSONObject().put("ts", it.ts).put("level", it.level).put("msg", if (it.level == "step") it.msg else RunLog.redact(it.msg)))
+                }
                 val code = Api.sendDiagnostics(
                     JSONObject().put("logs", logs)
                         .put("app_ver", BuildConfig.VERSION_NAME)

@@ -84,6 +84,15 @@ object Prefs {
         val a = org.json.JSONArray(tasksJson); (0 until a.length()).mapNotNull { a.optJSONObject(it) }
     }.getOrDefault(emptyList())
 
+    /** Platform of a task: `platform`, or derived from the script id for old tasks. */
+    fun platformOf(t: org.json.JSONObject): String = t.optString("platform").ifEmpty {
+        val sid = t.optString("script_id")
+        if (sid.startsWith("tiktok_") || sid.isEmpty()) "tiktok" else sid.substringBefore('_')
+    }
+
+    /** One task per platform: the first one of each platform (what the UI shows and the scheduler runs). */
+    fun primaryTasks(): List<org.json.JSONObject> = tasks().distinctBy { platformOf(it) }
+
     var cooldownUntil: Long
         get() = sp.getLong(K_COOLDOWN, 0L)
         set(v) = sp.edit().putLong(K_COOLDOWN, v).apply()
@@ -121,6 +130,7 @@ object Prefs {
 
     /** When the task last started (epoch ms), for the "every N hours" schedule; null = never on this install. */
     fun lastStart(taskId: String): Long? = sp.getLong(K_LAST_START + taskId, 0L).takeIf { it > 0 }
+        ?: taskStats(taskId)?.optLong("last_started_at")?.takeIf { it > 0 } // seed from the local run history
     fun setLastStart(taskId: String, ms: Long) = sp.edit().putLong(K_LAST_START + taskId, ms).apply()
 
     /** Per-task totals kept from the run reports this phone sent: {taskId: {runs, totals{}, credits, last_*}}. */
@@ -154,6 +164,6 @@ object Prefs {
     }
 
     fun logout() {
-        sp.edit().remove(K_TOKEN).remove(K_WALLET).remove(K_TASK).remove(K_TASKS).remove(K_BINDING).remove(K_OVER).remove(K_PHONE_LIMIT).remove(K_ACCOUNT).remove(K_STATS).remove(K_RUNS).apply()
+        sp.edit().remove(K_TOKEN).remove(K_WALLET).remove(K_TASK).remove(K_TASKS).remove(K_BINDING).remove(K_OVER).remove(K_PHONE_LIMIT).remove(K_ACCOUNT).remove(K_STATS).remove(K_RUNS).remove(K_HIDDEN).apply()
     }
 }

@@ -42,11 +42,23 @@ object RunLog {
         val batch = pending.toList()
         pending.removeAll(batch.toSet())
         val arr = JSONArray()
+        val own = ownHandle()
         batch.forEach {
-            arr.put(JSONObject().put("ts", it.ts).put("level", it.level).put("msg", it.msg).put("run_id", it.runId ?: JSONObject.NULL))
+            val msg = if (it.level == "step") it.msg else redact(it.msg, own)
+            arr.put(JSONObject().put("ts", it.ts).put("level", it.level).put("msg", msg).put("run_id", it.runId ?: JSONObject.NULL))
         }
         return batch to arr.toString()
     }
+
+    private val HANDLE = Regex("@[A-Za-z0-9._]+")
+
+    private fun ownHandle(): String = runCatching {
+        JSONObject(Prefs.bindingJson).optString("platform_uid").lowercase()
+    }.getOrDefault("")
+
+    /** Uploaded logs never carry other people's @handles; the user's own handle stays. */
+    fun redact(msg: String, own: String = ownHandle()): String =
+        HANDLE.replace(msg) { m -> if (own.isNotEmpty() && m.value.substring(1).lowercase() == own) m.value else "@***" }
 
     fun restore(batch: List<Line>) { pending.addAll(0, batch) }
 }

@@ -16,6 +16,18 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
 
+/** ctx.say step codes from the contract, with the argument keys each may carry. */
+private val STEP_ARGS: Map<String, List<String>> = mapOf(
+    "open_app" to emptyList(), "account_ok" to emptyList(), "search" to listOf("kw"), "open_link" to emptyList(),
+    "open_rival" to emptyList(), "open_comments" to emptyList(), "ai_writing" to emptyList(), "replied" to listOf("text"),
+    "video_summary" to listOf("likes", "replies"), "next_video" to emptyList(), "reach_old_leads" to emptyList(),
+    "collect_leads" to emptyList(), "leads_found" to listOf("n"), "reach_leads" to emptyList(), "reach_lead" to emptyList(),
+    "lead_liked" to emptyList(), "lead_commented" to listOf("text"), "lead_followed" to emptyList(), "done" to emptyList(),
+    "cap_reached" to emptyList(), "time_up" to emptyList(), "not_logged_in" to emptyList(), "verify_stop" to emptyList(),
+    "stopped" to emptyList(), "stopped_other" to emptyList(),
+)
+private const val MAX_STEPS = 300
+
 /** A verified script pack as delivered by GET /api/mobile/scenarios/:id. */
 data class ScriptPack(
     val id: String,
@@ -81,6 +93,17 @@ class ScriptEngine(
     /** Credits this run used: `charged` from chargeAction + billable tokens of every AI reply. */
     @Volatile private var credits = 0L
     private val statLock = Any()
+
+    private var lastStep = ""
+    private var lastStepAt = 0L
+    private var stepCount = 0
+
+    /** Step args are shown to the user and uploaded: never other people's handles or links. */
+    private fun cleanStepText(v: String): String = v
+        .replace(Regex("https?://\\S+", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("\\S*tiktok\\.com/\\S*", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("@[A-Za-z0-9._]+"), "")
+        .replace(Regex("\\s{2,}"), " ").trim().take(120)
 
     /** Live numbers for the heartbeat `progress` and the run view (safe to call from any thread). */
     fun progress(): JSONObject = synchronized(statLock) {
@@ -312,18 +335,24 @@ const ctx = Object.freeze({
                 }
                 "say" -> {
                     val code = a.optString("code").trim()
-                    if (!Regex("^[a-z][a-z0-9_]{0,39}$").matches(code)) return err("bad_code", "bad_code")
+                    // Only the contract's step codes, and only their argument keys; anything else is dropped.
+                    val keys = STEP_ARGS[code] ?: return ok(false)
                     val src = a.optJSONObject("args") ?: JSONObject()
                     val args = JSONObject()
-                    // Only short plain values: the line is shown to the user and uploaded with the logs.
-                    src.keys().asSequence().take(6).forEach { k ->
+                    for (k in keys) {
                         when (val v = src.opt(k)) {
-                            is Number, is Boolean -> args.put(k.take(20), v)
-                            is String -> args.put(k.take(20), v.take(120))
+                            is Number -> args.put(k, v)
+                            is String -> args.put(k, cleanStepText(v))
                             else -> {}
                         }
                     }
-                    RunLog.add("step", JSONObject().put("c", code).put("a", args).toString(), runId)
+                    val line = JSONObject().put("c", code).put("a", args).toString()
+                    if (line == lastStep || stepCount >= MAX_STEPS) return ok(false) // no repeats, at most 300 per run
+                    // About one line per second: wait out the rest of the second instead of dropping the line.
+                    val wait = 1000L - (System.currentTimeMillis() - lastStepAt)
+                    if (wait > 0) delay(wait)
+                    lastStep = line; lastStepAt = System.currentTimeMillis(); stepCount++
+                    RunLog.add("step", line, runId)
                     ok(true)
                 }
                 "chargeAction" -> ok(charge(a.optString("action"), a.optString("ref")))
@@ -372,7 +401,7 @@ const ctx = Object.freeze({
                 else -> err("unknown_call:$name", "unknown_call")
             }
         } catch (e: A11yGuard.Blocked) {
-            RunLog.w("已攔截：${e.message}", runId)
+            RunLog.w(com.noobclaw.mobile.util.tr("已攔截：", "Blocked: ") + e.message, runId)
             err(e.message ?: "guard_blocked", "guard_blocked")
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e

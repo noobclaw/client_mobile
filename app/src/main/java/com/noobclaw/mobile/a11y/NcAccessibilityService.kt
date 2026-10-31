@@ -18,7 +18,7 @@ class NcAccessibilityService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
-        RunLog.i("無障礙服務已連接")
+        RunLog.i(com.noobclaw.mobile.util.tr("無障礙服務已連接", "Accessibility service connected"))
         if (com.noobclaw.mobile.BuildConfig.DEBUG) showDevBubble()
     }
 

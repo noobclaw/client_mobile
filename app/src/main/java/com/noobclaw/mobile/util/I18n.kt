@@ -41,7 +41,7 @@ object I18n {
             "買买賣卖價价錢钱幣币臉脸邊边顯显範范圍围歷历響响觀观壓压擴扩縮缩齊齐儘尽軟软體体隱隐私私" +
             "團团隊队幫帮夠够佈布礎础環环峰峰鑰钥謝谢鬧闹騰腾驟骤" +
             "別别檢检滿满潰溃礙碍結结絕绝給给統统緒绪緩缓腦脑艦舰證证識识進进郵邮閉闭階阶隨随險险電电風风" +
-            "創创彈弹榮荣測测潛潜細细絲丝繼继華华許许詳详議议讓让輕轻達达鈕钮鎖锁間间補补氣气馬马"
+            "創创彈弹榮荣測测潛潜細细絲丝繼继華华許许詳详議议讓让輕轻達达鈕钮鎖锁間间補补氣气馬马攔拦構构連连"
         val m = HashMap<Char, Char>()
         var i = 0
         while (i + 1 < pairs.length) { m[pairs[i]] = pairs[i + 1]; i += 2 }
@@ -58,3 +58,18 @@ object I18n {
 
 /** Shorthand used across the app. */
 fun tr(zhHant: String, en: String) = I18n.tr(zhHant, en)
+
+/**
+ * Like [tr] for text with user / posted values: the template is converted first, then each `{}` is filled
+ * with the next value as-is (so a Traditional nickname or comment is never rewritten to Simplified).
+ */
+fun trf(zhHant: String, en: String, vararg values: String): String {
+    val t = I18n.tr(zhHant, en)
+    val b = StringBuilder()
+    var i = 0; var v = 0
+    while (i < t.length) {
+        if (i + 1 < t.length && t[i] == '{' && t[i + 1] == '}' && v < values.size) { b.append(values[v++]); i += 2 }
+        else { b.append(t[i]); i++ }
+    }
+    return b.toString()
+}

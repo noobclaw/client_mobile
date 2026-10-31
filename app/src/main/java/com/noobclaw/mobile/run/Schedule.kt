@@ -20,6 +20,11 @@ object Schedule {
 
     data class Due(val slotKey: String)
 
+    /** A stored last start more than 5 min in the future (clock was changed) counts as "never ran". */
+    const val SKEW_MS = 5 * 60_000L
+    private fun sane(lastStart: Long?, nowMs: Long): Long? = lastStart?.takeIf { it <= nowMs + SKEW_MS }
+    private fun hm(h: Int, m: Int) = String.format(java.util.Locale.US, "%02d:%02d", h, m)
+
     sealed class Kind {
         data class Every(val hours: Double) : Kind()
         data class Daily(val at: LocalTime) : Kind()
@@ -52,7 +57,7 @@ object Schedule {
     /** JSON for task.schedule. */
     fun toJson(k: Kind): JSONObject = when (k) {
         is Kind.Every -> JSONObject().put("kind", "every").put("hours", if (k.hours == Math.floor(k.hours)) k.hours.toInt() as Any else k.hours)
-        is Kind.Daily -> JSONObject().put("kind", "daily").put("at", "%02d:%02d".format(k.at.hour, k.at.minute))
+        is Kind.Daily -> JSONObject().put("kind", "daily").put("at", hm(k.at.hour, k.at.minute))
         Kind.Manual -> JSONObject().put("kind", "manual")
     }
 
@@ -66,9 +71,10 @@ object Schedule {
             Kind.Manual -> return null
             is Kind.Every -> {
                 val nowMs = now.toInstant().toEpochMilli()
-                if (lastStart != null && nowMs - lastStart < (k.hours * 3_600_000).toLong()) return null
+                val last = sane(lastStart, nowMs)
+                if (last != null && nowMs - last < (k.hours * 3_600_000).toLong()) return null
                 val t = local.toLocalTime()
-                return Due("${local.toLocalDate()}@" + "%02d:%02d".format(t.hour, t.minute) + suffix)
+                return Due("${local.toLocalDate()}@" + hm(t.hour, t.minute) + suffix)
             }
             is Kind.Daily -> {
                 val today: LocalDate = local.toLocalDate()
@@ -89,7 +95,7 @@ object Schedule {
         val nowMs = now.toInstant().toEpochMilli()
         return when (val k = kind(task)) {
             Kind.Manual -> null
-            is Kind.Every -> if (lastStart == null) nowMs else maxOf(nowMs, lastStart + (k.hours * 3_600_000).toLong())
+            is Kind.Every -> sane(lastStart, nowMs).let { last -> if (last == null) nowMs else maxOf(nowMs, last + (k.hours * 3_600_000).toLong()) }
             is Kind.Daily -> {
                 val local = now.withZoneSameInstant(zone(task))
                 val today = local.toLocalDate()

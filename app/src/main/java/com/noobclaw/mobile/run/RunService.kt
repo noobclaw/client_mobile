@@ -42,6 +42,7 @@ class RunService : Service() {
     @Volatile private var captureJob: Job? = null
     @Volatile private var engine: ScriptEngine? = null
     private var overlay: FloatingStop? = null
+    private val lastTry = HashMap<String, Long>() // every-N tasks: last time the scheduler tried to start them
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -98,6 +99,7 @@ class RunService : Service() {
             runCatching { heartbeat() }.onFailure { RunLog.w(tr("心跳失敗：", "Heartbeat failed: ") + it.message) }
             // Task list from the server every 4th tick (60 s); schedule check every tick on the cached list.
             val fetch = tick % TASK_REFRESH_TICKS == 0
+            if (tick % COMPLIANCE_TICKS == 0) runCatching { Api.refreshCompliance() } // compliance switch every 30 min
             tick++
             runCatching { refreshTaskAndMaybeRun(fetch) }.onFailure { RunLog.w(tr("排程檢查失敗：", "Schedule check failed: ") + it.message) }
             runCatching { uploadLogs() }
@@ -170,19 +172,23 @@ class RunService : Service() {
     private suspend fun refreshTaskAndMaybeRun(fetch: Boolean = true) {
         if (Prefs.token.isEmpty()) return
         // Offline: keep using the last list we got, so a network blip does not skip a slot.
-        if (fetch) Api.refreshCompliance()
         if (fetch) runCatching { Api.fetchTasks().optJSONArray("tasks") }.onSuccess { if (it != null) Prefs.tasksJson = it.toString() }
             .onFailure { RunLog.w(tr("拉取任務失敗，用本地緩存：", "Couldn't fetch tasks, using the local copy: ") + it.message) }
         if (currentRun?.isActive == true) return
         if (Prefs.overLimit) return // 超出會員可用手機數:不排程
         // One run at a time: the first due task runs now, the next one on a later heartbeat (catch-up window 2 h).
-        for (task in Prefs.tasks()) {
+        // Only the one task per platform the UI shows (left-over duplicates from older versions never run).
+        for (task in Prefs.primaryTasks()) {
             val id = task.optString("id")
             val due = Schedule.due(task, ZonedDateTime.now(), doneSlots(), "#$id", Prefs.lastStart(id)) ?: continue
             val key = due.slotKey
-            // mark first: a crash mid-run never re-runs the same slot / interval
-            if (Schedule.kind(task) is Schedule.Kind.Daily) markSlotDone(key)
-            Prefs.setLastStart(id, System.currentTimeMillis())
+            if (Schedule.kind(task) is Schedule.Kind.Daily) markSlotDone(key) // mark first: a crash mid-run never re-runs the same slot
+            else {
+                // every N h: the start time is written when the run really starts; a skipped run retries after 15 min
+                val tried = lastTry[id] ?: 0L
+                if (System.currentTimeMillis() - tried < RETRY_MS) continue
+                lastTry[id] = System.currentTimeMillis()
+            }
             startRun(key, dryRun = false, taskId = task.optString("id"))
             return
         }
@@ -214,10 +220,10 @@ class RunService : Service() {
             runningRunId = runId
             runStartedAt = started
             report.put("task_id", runningTaskId)
-            if (!dryRun) Prefs.setLastStart(task.optString("id"), started) // "every N hours" counts from the last start
             val binding = runCatching { JSONObject(Prefs.bindingJson) }.getOrElse { JSONObject() } // filled by the script (setAccount)
             report.put("late_sec", Schedule.lateSeconds(task, slotKey, ZonedDateTime.now()))
             val (pkg, ver) = targetAppInfo() ?: run { report.put("status", "skipped").put("reason", "app_not_installed"); return }
+            if (!dryRun) Prefs.setLastStart(task.optString("id"), started) // the run really starts: "every N hours" counts from here
             RunLog.i(tr("開始運行", "Run started") + "（" + (if (dryRun) tr("試跑", "dry run") else tr("正式", "live")) + "）· $pkg v$ver", runId)
             val pack = ScriptLoader.load(task.optString("script_id", "tiktok_comment_like"), ver)
             report.put("script_version", pack.version)
@@ -280,25 +286,25 @@ class RunService : Service() {
      */
     private suspend fun captureScreen(wait: Boolean) {
         if (wait) {
-            RunLog.i("8 秒後抓取畫面：請切到 TikTok 要看的那個畫面")
+            RunLog.i(tr("8 秒後抓取畫面：請切到 TikTok 要看的那個畫面", "Capturing the screen in 8 s: switch to the TikTok screen to look at"))
             delay(8000)
         }
         val tree = runCatching { com.noobclaw.mobile.a11y.UiOps { NcAccessibilityService.instance }.dumpTree(1500) }
             .getOrElse { JSONObject().put("error", it.message ?: "dump_failed") }
-        if (tree.optBoolean("redacted")) { RunLog.w("前台不是 TikTok，沒有抓取"); return }
+        if (tree.optBoolean("redacted")) { RunLog.w(tr("前台不是 TikTok，沒有抓取", "TikTok isn't in front — nothing captured")); return }
         val logs = org.json.JSONArray()
-        RunLog.recent().takeLast(100).forEach { logs.put(JSONObject().put("ts", it.ts).put("level", it.level).put("msg", it.msg)) }
+        RunLog.recent().takeLast(100).forEach { logs.put(JSONObject().put("ts", it.ts).put("level", it.level).put("msg", if (it.level == "step") it.msg else RunLog.redact(it.msg))) }
         val tk = targetAppInfo()
         runCatching {
             Api.sendDiagnostics(JSONObject().put("kind", "screen_capture").put("tree", tree).put("logs", logs)
                 .put("target_app", tk?.first ?: "").put("target_ver", tk?.second ?: 0)
                 .put("app_ver", com.noobclaw.mobile.BuildConfig.VERSION_NAME).put("android_sdk", Build.VERSION.SDK_INT))
         }.onSuccess {
-            RunLog.i("已上傳畫面結構，客服碼 $it")
+            RunLog.i(tr("已上傳畫面結構，客服碼 ", "Screen structure uploaded, support code ") + it)
             if (!wait) kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                android.widget.Toast.makeText(applicationContext, "已抓取 $it", android.widget.Toast.LENGTH_SHORT).show()
+                android.widget.Toast.makeText(applicationContext, tr("已抓取 ", "Captured ") + it, android.widget.Toast.LENGTH_SHORT).show()
             }
-        }.onFailure { RunLog.e("上傳失敗：${it.message}") }
+        }.onFailure { RunLog.e(tr("上傳失敗：", "Upload failed: ") + it.message) }
     }
 
     /** Stops the service when automation is off and neither a run nor a capture is pending. */
@@ -358,6 +364,8 @@ class RunService : Service() {
         const val NOTIF_ID = 42
         const val HEARTBEAT_MS = 15_000L
         const val TASK_REFRESH_TICKS = 4
+        const val COMPLIANCE_TICKS = 120          // 120 × 15 s = 30 min
+        const val RETRY_MS = 15 * 60_000L         // skipped "every N h" run: try again after 15 min
         const val ACTION_RUN_NOW = "com.noobclaw.mobile.RUN_NOW"
         const val ACTION_DRY_RUN = "com.noobclaw.mobile.DRY_RUN"
         const val ACTION_STOP_RUN = "com.noobclaw.mobile.STOP_RUN"

@@ -60,4 +60,14 @@ class ScheduleTest {
         assertEquals(Schedule.Kind.Daily(java.time.LocalTime.of(9, 30)), Schedule.kind(task("09:30", "20:00")))
         assertEquals(Schedule.Kind.Manual, Schedule.kind(task("09:30", enabled = false)))
     }
+
+    @Test fun lastStartInTheFutureCountsAsNeverRan() {
+        val now = ZonedDateTime.of(2026, 10, 31, 14, 5, 0, 0, la)
+        val ms = now.toInstant().toEpochMilli()
+        val t = sched(JSONObject().put("kind", "every").put("hours", 6))
+        // 1 h ahead (clock moved back): due now; 2 min ahead (small drift): still counts
+        assertEquals("2026-10-31@14:05#t1", Schedule.due(t, now, emptySet(), "#t1", ms + 3_600_000)?.slotKey)
+        assertNull(Schedule.due(t, now, emptySet(), "#t1", ms + 2 * 60_000))
+        assertEquals(ms, Schedule.nextRunAt(t, ms + 3_600_000, emptySet(), now))
+    }
 }

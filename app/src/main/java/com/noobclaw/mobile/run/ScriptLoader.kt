@@ -24,7 +24,7 @@ object ScriptLoader {
         if (pub.isEmpty()) {
             // Only debug builds may run without a pinned key, for local development against staging.
             if (!BuildConfig.DEBUG) throw Rejected("no_pinned_key")
-            RunLog.w("開發版：未配置劇本公鑰，跳過簽名校驗（正式版會拒絕運行）")
+            RunLog.w(com.noobclaw.mobile.util.tr("開發版：未配置劇本公鑰，跳過簽名校驗（正式版會拒絕運行）", "Dev build: no script key set, signature check skipped (release builds refuse to run)"))
         } else if (!ScriptVerifier.verify(pub, scriptId, version, code, signature)) {
             throw Rejected("bad_signature")
         }
