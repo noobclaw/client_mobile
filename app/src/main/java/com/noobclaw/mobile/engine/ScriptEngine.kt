@@ -78,6 +78,14 @@ class ScriptEngine(
     private val dryState = HashMap<String, Any?>()
     private val counts = JSONObject()
     private var targets = JSONObject()
+    /** Credits this run used: `charged` from chargeAction + billable tokens of every AI reply. */
+    @Volatile private var credits = 0L
+    private val statLock = Any()
+
+    /** Live numbers for the heartbeat `progress` and the run view (safe to call from any thread). */
+    fun progress(): JSONObject = synchronized(statLock) {
+        JSONObject().put("counts", JSONObject(counts.toString())).put("targets", JSONObject(targets.toString())).put("credits", credits)
+    }
 
     suspend fun run(): JSONObject {
         val quickJs = QuickJs.create(Dispatchers.Default)
@@ -98,7 +106,7 @@ class ScriptEngine(
             // evaluationTimeoutMillis only counts JS execution, not awaited bridge calls: enforce wall time here.
             val raw = withTimeout(caps.maxRunMs + 10 * 60_000) { quickJs.evaluate<String>(source, "${pack.id}.js") }
             val result = runCatching { JSONObject(raw) }.getOrElse { JSONObject().put("value", raw) }
-            return result.put("counts", counts).put("targets", targets)
+            return synchronized(statLock) { result.put("counts", counts).put("targets", targets).put("credits", credits) }
         } finally {
             quickJs.close()
         }
@@ -167,7 +175,9 @@ const ctx = Object.freeze({
   notify: (kind, msg) => __call('notify', { kind, msg: String(msg) }),
   dumpTree: () => __call('dumpTree'),
   // The TikTok account logged in on this phone, read by the script from the profile page. No manual binding.
-  setAccount: (handle) => __call('setAccount', { handle: String(handle || '') }),
+  setAccount: (handle, nickname) => __call('setAccount', { handle: String(handle || ''), nickname: String(nickname || '') }),
+  // Friendly progress line (a code + small args); the clients render it per language.
+  say: (code, args) => __call('say', { code: String(code || ''), args: (args && typeof args === 'object') ? args : {} }),
 });
 """
     }
@@ -296,8 +306,25 @@ const ctx = Object.freeze({
                 }
                 "aiCall" -> {
                     if (dryRun) return ok("[dry-run] comment placeholder")
-                    val text = withTimeout(90_000) { Api.chat(a.optString("system").take(8000), a.optString("user").take(8000)) }
-                    ok(text)
+                    val r = withTimeout(90_000) { Api.chat(a.optString("system").take(8000), a.optString("user").take(8000)) }
+                    synchronized(statLock) { credits += r.billable }
+                    ok(r.text)
+                }
+                "say" -> {
+                    val code = a.optString("code").trim()
+                    if (!Regex("^[a-z][a-z0-9_]{0,39}$").matches(code)) return err("bad_code", "bad_code")
+                    val src = a.optJSONObject("args") ?: JSONObject()
+                    val args = JSONObject()
+                    // Only short plain values: the line is shown to the user and uploaded with the logs.
+                    src.keys().asSequence().take(6).forEach { k ->
+                        when (val v = src.opt(k)) {
+                            is Number, is Boolean -> args.put(k.take(20), v)
+                            is String -> args.put(k.take(20), v.take(120))
+                            else -> {}
+                        }
+                    }
+                    RunLog.add("step", JSONObject().put("c", code).put("a", args).toString(), runId)
+                    ok(true)
                 }
                 "chargeAction" -> ok(charge(a.optString("action"), a.optString("ref")))
                 "historyHas" -> {
@@ -311,10 +338,10 @@ const ctx = Object.freeze({
                 }
                 "count" -> {
                     val t = a.optString("type")
-                    counts.put(t, counts.optInt(t, 0) + a.optInt("n", 1))
+                    synchronized(statLock) { counts.put(t, counts.optInt(t, 0) + a.optInt("n", 1)) }
                     ok(true)
                 }
-                "targets" -> { targets = a; ok(true) }
+                "targets" -> { synchronized(statLock) { targets = a }; ok(true) }
                 "notify" -> {
                     if (!dryRun) runCatching { Api.notify(a.optString("kind"), a.optString("msg")) }
                     ok(true)
@@ -323,8 +350,15 @@ const ctx = Object.freeze({
                 "setAccount" -> {
                     val h = a.optString("handle").trim().removePrefix("@").lowercase()
                     if (!Regex("^[a-z0-9._]{2,24}$").matches(h)) return err("bad_handle", "bad_handle")
-                    val b = JSONObject().put("platform", "tiktok").put("platform_uid", h).put("display_id", "@$h")
-                    if (binding.optString("platform_uid") != h) {
+                    val stored = runCatching { JSONObject(com.noobclaw.mobile.util.Prefs.bindingJson) }.getOrElse { JSONObject() }
+                    // No nickname read this time: keep the one we already know for the same account.
+                    val nick = a.optString("nickname").trim().take(60)
+                        .ifEmpty { if (stored.optString("platform_uid") == h) stored.optString("nickname") else "" }
+                    val b = JSONObject().put("platform", "tiktok").put("platform_uid", h).put("display_id", "@$h").put("nickname", nick)
+                    // Send again when the account changed, or when we now know a (different) nickname.
+                    val changed = binding.optString("platform_uid") != h || stored.optString("platform_uid") != h ||
+                        (nick.isNotEmpty() && stored.optString("nickname") != nick)
+                    if (changed) {
                         // One phone = one TikTok account: register it silently (server keeps it to one NoobClaw account).
                         try { Api.bindPlatform(JSONObject(b.toString())) } catch (e: com.noobclaw.mobile.net.ApiException) {
                             if (e.status == 409) return err("platform_account_taken", "platform_account_taken")
@@ -366,7 +400,9 @@ const ctx = Object.freeze({
         for (attempt in 1..3) {
             try {
                 val r = Api.chargeAction(action, "tiktok", ref, key, pack.version)
-                return JSONObject().put("ok", r.optBoolean("ok", true)).put("charged", r.optInt("charged", 0))
+                val charged = r.optInt("charged", 0)
+                synchronized(statLock) { credits += charged.coerceAtLeast(0) }
+                return JSONObject().put("ok", r.optBoolean("ok", true)).put("charged", charged)
             } catch (e: com.noobclaw.mobile.net.ApiException) {
                 if (e.status == 402) return JSONObject().put("ok", false).put("reason", "insufficient_balance")
                 if (e.status in 400..499) return JSONObject().put("ok", false).put("reason", e.code)

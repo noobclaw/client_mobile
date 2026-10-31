@@ -13,6 +13,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
+import android.text.TextUtils
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -20,14 +21,17 @@ import android.view.Window
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.noobclaw.mobile.BuildConfig
+import com.noobclaw.mobile.a11y.A11yGuard
 import com.noobclaw.mobile.a11y.NcAccessibilityService
 import com.noobclaw.mobile.net.Api
 import com.noobclaw.mobile.run.RunService
+import com.noobclaw.mobile.run.Schedule
 import com.noobclaw.mobile.util.I18n
 import com.noobclaw.mobile.util.Prefs
 import com.noobclaw.mobile.util.RunLog
@@ -35,15 +39,17 @@ import com.noobclaw.mobile.util.tr
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
+import java.time.LocalTime
 import java.time.ZoneId
 
 /**
  * Single activity, screens built in code. Two tabs at the bottom: 任務 / 我的.
- * 登錄 → 使用說明 → 任務（新建：選平台 → 選劇本 → 設置）· 我的（帳號、會員、權限、語言、記錄、客服、退出）。
+ * 登錄 → 使用說明 → 權限引導 → 任務（雲手機卡片：平台標籤、帳號、任務要點、刪除 / 查看 / 運行；運行中顯示進度和步驟）
+ * · 任務詳情 · 任務設置 · 我的（帳號、會員、權限、語言、記錄、客服、退出）。
  */
 class MainActivity : AppCompatActivity() {
 
-    private enum class Screen { HOME, ME, PLATFORM, SCRIPT, CONFIG, LOGS }
+    private enum class Screen { HOME, ME, CONFIG, DETAIL, LOGS, PERMS }
 
     private lateinit var ui: Ui
     private lateinit var root: LinearLayout
@@ -51,23 +57,57 @@ class MainActivity : AppCompatActivity() {
     private lateinit var nav: LinearLayout
     private var screen = Screen.HOME
     private var draft: JSONObject? = null           // task being created / edited
-    private var permDialog: Dialog? = null
+    private var configBack = Screen.HOME             // where 返回 / 保存 goes from the editor
+    private var platformTab = "tiktok"
+    private var permsThen: (() -> Unit)? = null      // continues after the permission screen
+    private var permsAutoShown = false
+    private var a11yTipOpen = false
     private val main = Handler(Looper.getMainLooper())
-    private var lastRunning: String? = null
+    private var lastSig = ""
+    private var syncedAt = 0L
     private var balance: JSONObject? = null          // /api/ai/balance, loaded on the 我的 tab
-    private val logListener: (RunLog.Line) -> Unit = { _ -> runOnUiThread { if (screen == Screen.LOGS || screen == Screen.HOME) refreshSoon() } }
+    private val logListener: (RunLog.Line) -> Unit = { l ->
+        runOnUiThread { if (screen == Screen.LOGS || (l.level == "step" && (screen == Screen.HOME || screen == Screen.DETAIL))) refreshSoon() }
+    }
 
-    // ---------- scripts offered per platform ----------
-    private data class Script(val id: String, val icon: String, val color: Int)
-    private val tiktokScripts = listOf(
-        Script("tiktok_comment_like", "讚", C.CYAN),
-        Script("tiktok_lead_engage", "客", C.PURPLE),
-    )
-    private fun scriptOf(id: String) = tiktokScripts.firstOrNull { it.id == id } ?: tiktokScripts[0]
-    private fun Script.title() = if (id == "tiktok_comment_like") tr("評論區點讚", "Comment likes") else tr("定向獲客", "Lead engage")
-    private fun Script.desc() = if (id == "tiktok_comment_like") tr("給評論點讚，AI 回覆", "Like comments, AI replies")
-        else tr("找客戶，點讚、評論、關注", "Find leads: like, comment, follow")
-    private fun Script.badgeText() = if (I18n.lang == I18n.Lang.EN) (if (id == "tiktok_comment_like") "♥" else "@") else icon
+    // ---------- scripts / platforms ----------
+    private val CL = "tiktok_comment_like"
+    private val LEAD = "tiktok_lead_engage"
+    private fun scriptTitle(id: String) = if (id == LEAD) tr("定向獲客任務", "Lead task") else tr("評論區點讚任務", "Comment-like task")
+    private fun scriptShort(id: String) = if (id == LEAD) tr("定向獲客", "Lead engage") else tr("評論區點讚", "Comment likes")
+    private fun scriptDesc(id: String) = if (id == LEAD) tr("找客戶，點讚、評論、關注", "Find leads: like, comment, follow")
+        else tr("給評論點讚，AI 回覆", "Like comments, AI replies")
+
+    private data class Platform(val id: String, val live: Boolean)
+    private val allPlatforms = listOf(Platform("tiktok", true), Platform("douyin", false), Platform("xhs", false))
+    private fun platformName(id: String) = when (id) { "douyin" -> tr("抖音", "Douyin"); "xhs" -> tr("小紅書", "RedNote"); else -> "TikTok" }
+    /** Platforms not hidden by the backend compliance switch. */
+    private fun visiblePlatforms() = allPlatforms.filter { it.id !in Prefs.hiddenPlatforms }
+    private fun currentTab(): String {
+        val vis = visiblePlatforms()
+        if (vis.none { it.id == platformTab }) platformTab = vis.firstOrNull()?.id ?: "tiktok"
+        return platformTab
+    }
+
+    private fun platformOf(t: JSONObject): String = t.optString("platform").ifEmpty {
+        val sid = t.optString("script_id")
+        if (sid.startsWith("tiktok_") || sid.isEmpty()) "tiktok" else sid.substringBefore('_')
+    }
+    /** One task per platform; the TikTok task is the first TikTok one in the list. */
+    private fun taskFor(platform: String) = Prefs.tasks().firstOrNull { platformOf(it) == platform }
+    private fun taskById(id: String?) = Prefs.tasks().firstOrNull { it.optString("id") == id }
+
+    /** Default names are stored in Traditional Chinese (shared with the desktop); show them in the app's language. */
+    private fun taskName(t: JSONObject): String {
+        val n = t.optString("name").trim()
+        val sid = t.optString("script_id")
+        return when {
+            n.isEmpty() || n == "評論區點讚任務" || n == "定向獲客任務" -> scriptTitle(sid)
+            n.startsWith("評論區點讚 · ") -> tr("評論區點讚", "Comment likes") + " · " + n.removePrefix("評論區點讚 · ")
+            n.startsWith("定向獲客 · ") -> tr("定向獲客", "Lead engage") + " · " + n.removePrefix("定向獲客 · ")
+            else -> n
+        }
+    }
 
     // ---------- lifecycle ----------
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -77,7 +117,7 @@ class MainActivity : AppCompatActivity() {
         window.navigationBarColor = C.SURFACE
         @Suppress("DEPRECATION")
         window.decorView.systemUiVisibility = 0 // light icons on the dark bars
-        root = ui.col().apply { setPadding(ui.dp(20), ui.dp(24), ui.dp(20), ui.dp(32)) }
+        root = ui.col().apply { setPadding(ui.dp(16), ui.dp(20), ui.dp(16), ui.dp(32)) }
         scroll = ScrollView(this).apply { setBackgroundColor(C.BG); isFillViewport = true; addView(root) }
         nav = ui.row().apply { setBackgroundColor(C.SURFACE); setPadding(0, ui.dp(6), 0, ui.dp(8)) }
         val page = LinearLayout(this).apply {
@@ -95,10 +135,9 @@ class MainActivity : AppCompatActivity() {
             override fun handleOnBackPressed() {
                 when (screen) {
                     Screen.HOME -> { isEnabled = false; onBackPressedDispatcher.onBackPressed(); isEnabled = true }
-                    Screen.ME, Screen.PLATFORM -> go(Screen.HOME)
+                    Screen.ME, Screen.DETAIL, Screen.PERMS -> { if (screen == Screen.PERMS) permsThen = null; go(Screen.HOME) }
                     Screen.LOGS -> go(Screen.ME)
-                    Screen.SCRIPT -> go(if (draft?.has("id") == true) Screen.HOME else Screen.PLATFORM)
-                    Screen.CONFIG -> go(if (draft?.optBoolean("_editing") == true) Screen.HOME else Screen.SCRIPT)
+                    Screen.CONFIG -> go(configBack)
                 }
             }
         })
@@ -107,12 +146,21 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         reportLastCrash()
-        if (Prefs.token.isNotEmpty() && Prefs.consentVersion >= RunService.CONSENT_VERSION) RunService.start(this) // stand by
-        render()
+        val inApp = Prefs.token.isNotEmpty() && Prefs.consentVersion >= RunService.CONSENT_VERSION
+        if (inApp) RunService.start(this) // stand by
+        // Coming back from the system settings: continue when every permission is on.
+        if (screen == Screen.PERMS && missingPerms().isEmpty()) {
+            val then = permsThen; permsThen = null
+            screen = Screen.HOME
+            render()
+            then?.invoke()
+        } else render()
         RunLog.onLine(logListener)
         main.post(ticker)
-        // Coming back from the system settings: refresh the permission dialog or close it when all is granted.
-        permDialog?.let { if (it.isShowing) { it.dismiss(); if (missingPerms().isNotEmpty()) showPermDialog(pendingAfterPerms) else pendingAfterPerms?.invoke() } }
+        if (inApp && System.currentTimeMillis() - syncedAt > 60_000) {
+            syncedAt = System.currentTimeMillis()
+            lifecycleScope.launch { Api.refreshCompliance(); syncTasks(); if (screen == Screen.HOME || screen == Screen.DETAIL) render() }
+        }
     }
 
     override fun onPause() {
@@ -121,12 +169,18 @@ class MainActivity : AppCompatActivity() {
         super.onPause()
     }
 
-    /** Re-renders the task list when a run starts or ends. */
+    /** What the task screens show; when it changes (run starts / ends, progress, task list from the server) they re-render. */
+    private fun signature(): String = listOf(
+        RunService.runningTaskId, RunService.liveProgress()?.let { it.optJSONObject("counts")?.toString() + it.optLong("credits") },
+        Prefs.tasksJson.hashCode(), Prefs.bindingJson.hashCode(), Prefs.hiddenPlatforms.hashCode(), Prefs.overLimit,
+        NcAccessibilityService.isRunning,
+    ).joinToString("|")
+
     private val ticker = object : Runnable {
         override fun run() {
-            val now = RunService.runningTaskId
-            if (now != lastRunning && screen == Screen.HOME) render()
-            lastRunning = now
+            val sig = signature()
+            if (sig != lastSig && (screen == Screen.HOME || screen == Screen.DETAIL)) render()
+            lastSig = sig
             main.postDelayed(this, 2000)
         }
     }
@@ -134,7 +188,7 @@ class MainActivity : AppCompatActivity() {
     private fun refreshSoon() {
         if (refreshQueued) return
         refreshQueued = true
-        main.postDelayed({ refreshQueued = false; if (screen == Screen.LOGS) render() }, 800)
+        main.postDelayed({ refreshQueued = false; if (screen == Screen.LOGS || screen == Screen.HOME || screen == Screen.DETAIL) render() }, 800)
     }
 
     private fun reportLastCrash() {
@@ -172,20 +226,25 @@ class MainActivity : AppCompatActivity() {
     }
     private fun toast(t: String) = Toast.makeText(this, t, Toast.LENGTH_LONG).show()
     private fun add(v: View, top: Int = 0, bottom: Int = 0) = root.addView(v, ui.lp(top = top, bottom = bottom))
+    private fun gap(w: Int) = View(this).apply { layoutParams = LinearLayout.LayoutParams(ui.dp(w), 1) }
 
     private fun render() {
         root.removeAllViews()
         val inApp = Prefs.token.isNotEmpty() && Prefs.consentVersion >= RunService.CONSENT_VERSION
+        // Missing permissions: the step screen shows once per app start (and whenever a run needs them).
+        if (inApp && screen == Screen.HOME && !permsAutoShown && missingPerms().isNotEmpty()) { permsAutoShown = true; screen = Screen.PERMS }
+        if (inApp && screen == Screen.HOME) permsAutoShown = true
+        lastSig = signature()
         when {
             Prefs.token.isEmpty() -> renderLogin()
             !inApp -> renderConsent()
             else -> when (screen) {
                 Screen.HOME -> renderHome()
                 Screen.ME -> renderMe()
-                Screen.PLATFORM -> renderPlatform()
-                Screen.SCRIPT -> renderScript()
                 Screen.CONFIG -> renderConfig()
+                Screen.DETAIL -> renderDetail()
                 Screen.LOGS -> renderLogs()
+                Screen.PERMS -> renderPerms()
             }
         }
         renderNav(inApp && (screen == Screen.HOME || screen == Screen.ME))
@@ -257,7 +316,8 @@ class MainActivity : AppCompatActivity() {
                         return@launch
                     }
                     Prefs.account = name
-                    syncTasks(); screen = Screen.HOME; render()
+                    Api.refreshCompliance()
+                    syncTasks(); syncedAt = System.currentTimeMillis(); screen = Screen.HOME; render()
                 } catch (e: Exception) { toast(tr("登錄失敗：", "Login failed: ") + e.message) }
             }
         })
@@ -288,6 +348,7 @@ class MainActivity : AppCompatActivity() {
             Prefs.diagOptIn = diag
             Prefs.consentVersion = RunService.CONSENT_VERSION
             RunService.start(this) // stand by
+            permsAutoShown = false // next: the permission steps (if any is missing)
             screen = Screen.HOME
             render()
         }, bottom = 10)
@@ -295,31 +356,46 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun logout() {
-        Prefs.logout(); RunService.start(this, RunService.ACTION_SHUTDOWN); balance = null; balanceAt = 0L; balanceFailed = false; screen = Screen.HOME; render()
+        Prefs.logout(); RunService.start(this, RunService.ACTION_SHUTDOWN); balance = null; balanceAt = 0L; balanceFailed = false
+        permsAutoShown = false; screen = Screen.HOME; render()
     }
 
     // ---------- permissions ----------
-    private data class Perm(val title: String, val open: () -> Unit)
+    private enum class PermKind { A11Y, OVERLAY, BATTERY }
 
-    private fun missingPerms(): List<Perm> {
-        val out = mutableListOf<Perm>()
-        if (!NcAccessibilityService.isRunning) out += Perm(tr("無障礙服務", "Accessibility service")) {
-            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-        }
-        if (!Settings.canDrawOverlays(this)) out += Perm(tr("懸浮窗", "Display over other apps")) {
-            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
-        }
-        if (!getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)) out += Perm(tr("後台運行", "Run in background")) {
-            startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
-        }
-        return out
+    private fun granted(k: PermKind): Boolean = when (k) {
+        PermKind.A11Y -> NcAccessibilityService.isRunning
+        PermKind.OVERLAY -> Settings.canDrawOverlays(this)
+        PermKind.BATTERY -> getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)
     }
 
-    private var pendingAfterPerms: (() -> Unit)? = null
+    private fun missingPerms(): List<PermKind> = PermKind.values().filter { !granted(it) }
 
-    /** Runs [action] when every permission is on; otherwise asks for the missing ones first. */
+    /** Opens the system page for a permission; falls back to more general pages on ROMs without the direct one. */
+    private fun openPerm(k: PermKind) {
+        val pkg = Uri.parse("package:$packageName")
+        val tries = when (k) {
+            PermKind.A11Y -> listOf(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                // Some Settings apps scroll to / highlight our service with these extras.
+                val comp = "$packageName/${NcAccessibilityService::class.java.name}"
+                putExtra(":settings:fragment_args_key", comp)
+                putExtra(":settings:show_fragment_args", Bundle().apply { putString(":settings:fragment_args_key", comp) })
+            })
+            PermKind.OVERLAY -> listOf(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, pkg), Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION))
+            PermKind.BATTERY -> listOf(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, pkg), Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+        } + Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, pkg)
+        for (i in tries) if (runCatching { startActivity(i) }.isSuccess) return
+        toast(tr("打不開系統設置，請手動打開", "Couldn't open Settings — please open it yourself"))
+    }
+
+    private fun openAppDetails() {
+        runCatching { startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))) }
+            .onFailure { toast(tr("打不開系統設置，請手動打開", "Couldn't open Settings — please open it yourself")) }
+    }
+
+    /** Runs [action] when every permission is on; otherwise shows the permission steps first and continues after. */
     private fun withPerms(action: () -> Unit) {
-        if (missingPerms().isEmpty()) action() else showPermDialog(action)
+        if (missingPerms().isEmpty()) action() else { permsThen = action; go(Screen.PERMS) }
     }
 
     private fun overLimitText() = tr("超出會員可用手機數（${Prefs.phoneLimit} 臺），任務暫停", "Over your plan's phone limit (${Prefs.phoneLimit}) — tasks paused")
@@ -343,121 +419,565 @@ class MainActivity : AppCompatActivity() {
         d.show()
     }
 
-    private fun showPermDialog(after: (() -> Unit)?) {
-        pendingAfterPerms = after
-        val missing = missingPerms()
-        if (missing.isEmpty()) { after?.invoke(); return }
+    /** Confirm dialog: title, text, 取消 / [yes]. */
+    private fun confirm(title: String, body: String, yes: String, danger: Boolean = true, onYes: () -> Unit) {
         val (d, box) = dialogBox()
-        box.addView(ui.h2(tr("請先開啟權限", "Turn on permissions first")), ui.lp(bottom = 16))
-        missing.forEachIndexed { i, p ->
-            val r = ui.row()
-            r.addView(ui.badge("${i + 1}", C.ACCENT, C.ON_ACCENT, 30))
-            val t = ui.col().apply { setPadding(ui.dp(12), 0, ui.dp(8), 0) }
-            t.addView(ui.text(p.title, 15f, C.TEXT, true))
-            r.addView(t, ui.weight())
-            r.addView(ui.secondary(tr("開啟", "Open"), C.ACCENT) { p.open() })
-            box.addView(r, ui.lp(bottom = 14))
-        }
-        box.addView(ui.link(tr("取消", "Cancel"), C.SUB) { pendingAfterPerms = null; d.dismiss() }.apply { gravity = Gravity.CENTER })
-        permDialog = d
+        box.addView(ui.h2(title), ui.lp(bottom = 10))
+        box.addView(ui.text(body, 14f, C.SUB), ui.lp(bottom = 18))
+        val r = ui.row()
+        r.addView(ui.secondary(tr("取消", "Cancel")) { d.dismiss() }, ui.weight())
+        r.addView(gap(10))
+        r.addView(ui.small(yes, Color.WHITE, if (danger) C.DANGER else C.ACCENT, null) { d.dismiss(); onYes() }.apply { setPadding(ui.dp(14), ui.dp(12), ui.dp(14), ui.dp(12)) }, ui.weight())
+        box.addView(r)
         showDialog(d, box)
     }
 
-    // ---------- tab 1: tasks ----------
+    private fun vendorKey(): String? {
+        val m = Build.MANUFACTURER.lowercase()
+        return when {
+            m.contains("xiaomi") || m.contains("redmi") || m.contains("poco") -> "xiaomi"
+            m.contains("huawei") || m.contains("honor") -> "huawei"
+            m.contains("oppo") || m.contains("realme") || m.contains("oneplus") -> "oppo"
+            m.contains("vivo") || m.contains("iqoo") -> "vivo"
+            else -> null
+        }
+    }
+
+    /** Step screen: "開始前，需要開 3 個權限" — one card per permission, re-checked on return from Settings. */
+    private fun renderPerms() {
+        val kinds = PermKind.values().toList()
+        val done = kinds.count { granted(it) }
+        val head = ui.row()
+        head.addView(ui.text(tr("開始前，需要開 3 個權限", "Before you start: turn on 3 permissions"), 22f, C.TEXT, true), ui.weight())
+        add(head, bottom = 6)
+        add(ui.sub(tr("開好後會自動繼續。每個只需開一次。", "We'll continue by ourselves once they're on. Each one is a one-time switch.")), bottom = 14)
+
+        // progress bar k / 3
+        val pr = ui.row()
+        val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; background = ui.shape(C.SURFACE2, 4) }
+        bar.addView(View(this).apply { background = ui.shape(C.ACCENT, 4) }, LinearLayout.LayoutParams(0, ui.dp(6), done.toFloat().coerceAtLeast(0.001f)))
+        bar.addView(View(this), LinearLayout.LayoutParams(0, ui.dp(6), (3 - done).toFloat().coerceAtLeast(0.001f)))
+        pr.addView(bar, LinearLayout.LayoutParams(0, ui.dp(6), 1f))
+        pr.addView(ui.text("  $done / 3", 13f, C.ACCENT, true))
+        add(pr, bottom = 18)
+
+        kinds.forEachIndexed { i, k ->
+            val ok = granted(k)
+            val card = ui.card(selected = false)
+            val r = ui.row()
+            r.addView(if (ok) ui.badge("✓", C.ACCENT, C.ON_ACCENT, 32) else ui.badge("${i + 1}", C.SURFACE2, C.TEXT, 32).apply { background = ui.shape(C.SURFACE2, 16, C.BORDER) })
+            val t = ui.col().apply { setPadding(ui.dp(12), 0, ui.dp(8), 0) }
+            t.addView(ui.text(when (k) {
+                PermKind.A11Y -> tr("無障礙服務", "Accessibility service")
+                PermKind.OVERLAY -> tr("懸浮窗", "Display over other apps")
+                PermKind.BATTERY -> tr("後台運行", "Run in background")
+            }, 16f, C.TEXT, true))
+            t.addView(ui.text(when (k) {
+                PermKind.A11Y -> tr("讓 NoobClaw 能替你在 TikTok 裡點讚、回覆。", "Lets NoobClaw tap and type in TikTok for you.")
+                PermKind.OVERLAY -> tr("運行時在屏幕上顯示停止按鈕，隨時能停。", "Shows a stop button on screen while a task runs.")
+                PermKind.BATTERY -> tr("鎖屏或切到別的 App 時，任務也能按時運行。", "Keeps tasks on schedule when the screen is off or you switch apps.")
+            }, 13f, C.SUB), ui.lp(top = 2))
+            r.addView(t, ui.weight())
+            if (ok) r.addView(ui.text(tr("✓ 已開啟", "✓ On"), 13f, C.ACCENT, true))
+            else r.addView(ui.small(tr("去開啟", "Turn on"), C.ON_ACCENT, C.ACCENT, null) { openPerm(k) })
+            card.addView(r)
+
+            if (k == PermKind.A11Y && !ok) {
+                card.addView(ui.sub(tr("打開後找到「NoobClaw」，把開關打開。", "In the list, find \"NoobClaw\" and switch it on.")), ui.lp(top = 10))
+                if (Build.VERSION.SDK_INT >= 33) {
+                    val tip = ui.col().apply { setPadding(ui.dp(12), ui.dp(10), ui.dp(12), ui.dp(10)); background = ui.shape(ui.alpha(C.WARN, 18), 12, ui.alpha(C.WARN, 80)) }
+                    tip.addView(ui.text((if (a11yTipOpen) "▾ " else "▸ ") + tr("開關是灰色的，點不動？", "Is the switch grey and won't turn on?"), 13f, C.WARN, true).apply {
+                        setOnClickListener { a11yTipOpen = !a11yTipOpen; render() }
+                    })
+                    if (a11yTipOpen) {
+                        tip.addView(ui.text(tr(
+                            "Android 13 以上，不是從應用商店裝的 App 要先解鎖：\n1. 點下面的按鈕，打開 NoobClaw 的應用信息\n2. 點右上角 ⋮ →「允許受限設置」\n3. 回到這裡，再點「去開啟」",
+                            "On Android 13+, apps not installed from a store must be unlocked first:\n1. Tap the button below to open NoobClaw's App info\n2. Tap ⋮ (top right) → \"Allow restricted settings\"\n3. Come back here and tap \"Turn on\" again"),
+                            13f, C.TEXT), ui.lp(top = 8, bottom = 10))
+                        tip.addView(ui.small(tr("打開應用信息", "Open App info"), C.WARN, C.SURFACE, ui.alpha(C.WARN, 120)) { openAppDetails() })
+                    }
+                    card.addView(tip, ui.lp(top = 10))
+                }
+            }
+            add(card, bottom = 12)
+        }
+
+        vendorKey()?.let { v ->
+            val card = ui.card()
+            card.addView(ui.text(tr("建議：允許自啟動", "Tip: allow auto-start"), 15f, C.TEXT, true), ui.lp(bottom = 4))
+            card.addView(ui.text(when (v) {
+                "xiaomi" -> tr("小米 / 紅米：應用信息裡打開「自啟動」，省電策略選「無限制」。", "Xiaomi / Redmi: in App info turn on \"Autostart\" and set battery saver to \"No restrictions\".")
+                "huawei" -> tr("華為 / 榮耀：應用啟動管理裡把 NoobClaw 改成手動管理，三個開關都打開。", "Huawei / Honor: in App launch, set NoobClaw to manual and turn on all three switches.")
+                "oppo" -> tr("OPPO / realme / 一加：應用信息裡允許「自啟動」和「後台運行」。", "OPPO / realme / OnePlus: in App info allow \"Auto launch\" and background activity.")
+                else -> tr("vivo / iQOO：在 i 管家或應用信息裡允許「自啟動」和「後台高耗電」。", "vivo / iQOO: allow \"Auto start\" and high background power use in App info or i Manager.")
+            }, 13f, C.SUB), ui.lp(bottom = 10))
+            card.addView(ui.small(tr("打開應用信息", "Open App info")) { openAppDetails() })
+            add(card, bottom = 12)
+        }
+
+        if (done == 3) add(ui.primary(tr("繼續", "Continue")) { val then = permsThen; permsThen = null; go(Screen.HOME); then?.invoke() }, top = 6)
+        add(ui.link(tr("稍後再說", "Later"), C.SUB) { permsThen = null; go(Screen.HOME) }.apply { gravity = Gravity.CENTER }, top = 8)
+    }
+
+    // ---------- tab 1: the cloud-phone card ----------
+    private fun binding(): JSONObject = runCatching { JSONObject(Prefs.bindingJson) }.getOrElse { JSONObject() }
+    private fun tiktokHandle() = binding().optString("display_id")
+
+    private fun tiktokInstalled(): Boolean = A11yGuard.TARGET_PACKAGES.any { pkg ->
+        runCatching { packageManager.getPackageInfo(pkg, 0) }.isSuccess
+    }
+
+    private val AV = listOf("#7b5cf6", "#00a3ff", "#ff6a3d", "#e2468a", "#14b8a6", "#f59e0b", "#6366f1", "#22c55e").map { Color.parseColor(it) }
+    private fun avColor(h: String): Int { var n = 0L; for (c in h) n = (n * 31 + c.code) and 0xffffffffL; return AV[(n % AV.size).toInt()] }
+
+    /** Initial-letter avatar + nickname + @handle. */
+    private fun accountRow(withModel: Boolean = false): View? {
+        val b = binding()
+        val handle = b.optString("display_id").ifEmpty { return null }
+        val nick = b.optString("nickname").ifEmpty { handle.removePrefix("@") }
+        val r = ui.row()
+        val first = nick.codePointAt(0).let { String(Character.toChars(it)) }.uppercase()
+        r.addView(ui.badge(first, avColor(handle), Color.WHITE, 34))
+        val t = ui.col().apply { setPadding(ui.dp(10), 0, 0, 0) }
+        t.addView(ui.text(nick, 14f, C.TEXT, true).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END })
+        t.addView(ui.text(handle + if (withModel) " · " + Build.MANUFACTURER + "/" + Build.MODEL else "", 12f, C.SUB).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END })
+        r.addView(t, ui.weight())
+        return r
+    }
+
+    private fun statusPill(): View {
+        val running = RunService.runningTaskId != null
+        return when {
+            running -> ui.pillSolid(tr("運行中", "Running"), C.ACCENT, C.ON_ACCENT)
+            Prefs.overLimit -> ui.pill(tr("超出會員數", "Over limit"), C.WARN)
+            !NcAccessibilityService.isRunning -> ui.pill(tr("缺權限", "Permissions"), C.WARN)
+            System.currentTimeMillis() < Prefs.cooldownUntil -> ui.pill(tr("冷卻中", "Cooling down"), C.DANGER)
+            else -> ui.pill(tr("在線", "Online"), C.ACCENT)
+        }
+    }
+
     private fun renderHome() {
         val head = ui.row()
         val title = ui.col()
-        title.addView(ui.text(tr("我的任務", "My tasks"), 26f, C.TEXT, true))
+        title.addView(ui.text(tr("我的雲手機", "My cloud phone"), 24f, C.TEXT, true))
         title.addView(ui.sub("v${BuildConfig.VERSION_NAME}（${BuildConfig.VERSION_CODE}）"))
         head.addView(title, ui.weight())
-        add(head, bottom = 18)
+        add(head, bottom = 14)
 
-        // status strip: TikTok account + permissions
-        val status = ui.card()
-        val r = ui.row()
-        r.addView(ui.badge("TT", Color.BLACK, Color.WHITE, 40))
-        val info = ui.col().apply { setPadding(ui.dp(12), 0, 0, 0) }
-        info.addView(ui.text(tiktokHandle().ifEmpty { "TikTok" }, 15f, C.TEXT, true))
-        r.addView(info, ui.weight())
-        val missing = missingPerms()
-        if (missing.isEmpty()) r.addView(ui.pill(tr("就緒", "Ready"), C.ACCENT))
-        else r.addView(ui.pill(tr("缺權限", "Permissions"), C.WARN).apply { setOnClickListener { showPermDialog(null) } })
-        status.addView(r)
-        add(status, bottom = if (Prefs.overLimit) 12 else 22)
-        if (Prefs.overLimit) {
-            val warn = ui.card()
-            warn.addView(ui.text(overLimitText(), 14f, C.WARN, true))
-            warn.addView(ui.sub(tr("升級會員，或在電腦端移除不用的手機", "Upgrade, or remove an unused phone in the desktop app")))
-            add(warn, bottom = 22)
+        val running = RunService.runningTaskId != null
+        val card = ui.col(14).apply {
+            background = if (running) ui.shape(C.SURFACE, 22, ui.alpha(C.ACCENT, 200), 2) else ui.shape(C.SURFACE, 22, C.BORDER)
         }
-
-        val tasks = Prefs.tasks()
-        if (tasks.isEmpty()) {
-            val empty = ui.card().apply { gravity = Gravity.CENTER_HORIZONTAL; setPadding(ui.dp(20), ui.dp(28), ui.dp(20), ui.dp(24)) }
-            empty.addView(ui.text(tr("還沒有任務", "No tasks yet"), 17f, C.SUB, true).apply { gravity = Gravity.CENTER }, ui.lp(bottom = 18))
-            empty.addView(ui.primary(tr("＋  新建任務", "＋  New task")) { newTask() })
-            add(empty)
-        } else {
-            tasks.forEach { add(taskCard(it), bottom = 12) }
-            add(ui.primary(tr("＋  新建任務", "＋  New task")) { newTask() }, top = 6)
-        }
-    }
-
-    private fun tiktokHandle() = runCatching { JSONObject(Prefs.bindingJson).optString("display_id") }.getOrDefault("")
-
-    private fun levelName(k: String) = when (k) {
-        "low" -> tr("少", "Few"); "high" -> tr("多", "Many"); else -> tr("中", "Normal")
-    }
-
-    private fun taskCard(t: JSONObject): View {
-        val s = scriptOf(t.optString("script_id"))
-        val id = t.optString("id")
-        val running = RunService.runningTaskId == id
-        val card = ui.card(selected = running)
+        // 設備ID chip
+        card.addView(ui.mono(tr("設備ID: ", "Device ID: ") + Prefs.deviceId, 11f, C.TEXT, true).apply {
+            setPadding(ui.dp(8), ui.dp(3), ui.dp(8), ui.dp(3)); background = ui.shape(ui.alpha(C.TEXT, 14), 7, C.BORDER)
+            maxLines = 1; ellipsize = TextUtils.TruncateAt.END
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = ui.dp(10) })
+        // model + status
         val top = ui.row()
-        top.addView(ui.badge(s.badgeText(), s.color, Color.WHITE, 42))
-        val name = ui.col().apply { setPadding(ui.dp(12), 0, ui.dp(8), 0) }
-        name.addView(ui.text(t.optString("name").ifEmpty { s.title() }, 16f, C.TEXT, true))
-        name.addView(ui.sub(s.title()))
-        top.addView(name, ui.weight())
-        top.addView(when {
-            running -> ui.pill(tr("運行中", "Running"), C.ACCENT)
-            t.optBoolean("enabled") -> ui.pill(tr("定時", "Scheduled"), C.PURPLE)
-            else -> ui.pill(tr("手動", "Manual"), C.SUB)
-        })
+        val mt = ui.col()
+        mt.addView(ui.text(Build.MANUFACTURER + "/" + Build.MODEL, 15f, C.TEXT, true).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END })
+        mt.addView(ui.mono("Android ${Build.VERSION.RELEASE}", 11f, C.SUB))
+        top.addView(mt, ui.weight())
+        top.addView(statusPill())
         card.addView(top, ui.lp(bottom = 12))
 
-        val c = t.optJSONObject("config") ?: JSONObject()
-        card.addView(ui.text(listOfNotNull(whereOf(c).firstOrNull(), levelName(levelFromCaps(t)),
-            if (t.optBoolean("enabled")) slotsOf(t).joinToString(" / ") else null).joinToString("  ·  "), 14f, C.SUB))
+        if (Prefs.overLimit) {
+            val warn = ui.col().apply { setPadding(ui.dp(12), ui.dp(10), ui.dp(12), ui.dp(10)); background = ui.shape(ui.alpha(C.WARN, 18), 12, ui.alpha(C.WARN, 90)) }
+            warn.addView(ui.text("🔒  " + overLimitText(), 14f, C.WARN, true))
+            warn.addView(ui.sub(tr("升級會員，或在電腦端移除不用的手機", "Upgrade, or remove an unused phone in the desktop app")))
+            card.addView(warn, ui.lp(bottom = 12))
+        }
 
-        val btns = ui.row().apply { setPadding(0, ui.dp(10), 0, 0) }
-        if (running) btns.addView(ui.secondary(tr("■  停止", "■  Stop"), C.DANGER) { RunService.start(this, RunService.ACTION_STOP_RUN) }, ui.weight())
-        else btns.addView(ui.primary(tr("▶  運行", "▶  Run")) {
-            withRunPerms { RunService.start(this, RunService.ACTION_RUN_NOW, id); toast(tr("已開始", "Started")) }
-        }, ui.weight())
-        btns.addView(ui.spacer(1).apply { layoutParams = LinearLayout.LayoutParams(ui.dp(8), 1) })
-        btns.addView(ui.secondary(tr("編輯", "Edit")) { editTask(t) })
-        btns.addView(ui.spacer(1).apply { layoutParams = LinearLayout.LayoutParams(ui.dp(8), 1) })
-        btns.addView(ui.secondary("⋯") { taskMenu(t) })
-        card.addView(btns)
-        return card
+        when {
+            running -> card.addView(runPanel())
+            !NcAccessibilityService.isRunning -> card.addView(permPanel())
+            else -> card.addView(platformPanel())
+        }
+        add(card, bottom = 12)
+
+        // a11y is on but something else is missing: a small reminder under the card
+        val missing = missingPerms()
+        if (NcAccessibilityService.isRunning && missing.isNotEmpty()) {
+            add(ui.link(tr("還有 ${missing.size} 個權限沒開，去開啟 ›", "${missing.size} permission(s) still off — turn on ›"), C.WARN) { go(Screen.PERMS) }.apply { gravity = Gravity.CENTER })
+        }
     }
 
-    private fun taskMenu(t: JSONObject) {
-        val (d, box) = dialogBox()
-        box.addView(ui.h2(t.optString("name").ifEmpty { scriptOf(t.optString("script_id")).title() }), ui.lp(bottom = 14))
-        box.addView(ui.secondary(tr("試跑（不扣費）", "Dry run (free)")) {
-            d.dismiss(); withRunPerms { RunService.start(this, RunService.ACTION_DRY_RUN, t.optString("id")); toast(tr("試跑開始", "Dry run started")) }
-        }, ui.lp(bottom = 10))
-        box.addView(ui.secondary(if (t.optBoolean("enabled")) tr("關閉定時", "Turn off schedule") else tr("開啟定時", "Turn on schedule")) {
-            d.dismiss(); saveTask(JSONObject(t.toString()).put("enabled", !t.optBoolean("enabled")))
-        }, ui.lp(bottom = 10))
-        box.addView(ui.secondary(tr("刪除", "Delete"), C.DANGER) {
-            d.dismiss()
+    /** a11y off: no platform UI, just the permission note (same as the desktop card). */
+    private fun permPanel(): View {
+        val p = ui.panel(ui.alpha(C.WARN, 90), ui.alpha(C.WARN, 14)).apply { setPadding(ui.dp(16), ui.dp(18), ui.dp(16), ui.dp(16)); gravity = Gravity.CENTER_HORIZONTAL }
+        p.addView(ui.text(tr("運行需要權限", "Permissions needed to run"), 16f, C.WARN, true).apply { gravity = Gravity.CENTER }, ui.lp(bottom = 6))
+        p.addView(ui.text(tr("請為 NoobClaw App 打開無障礙服務權限", "Turn on the accessibility service for the NoobClaw app"), 13f, C.WARN).apply { gravity = Gravity.CENTER }, ui.lp(bottom = 14))
+        p.addView(ui.small(tr("去開啟", "Turn on"), C.ON_ACCENT, C.ACCENT, null) { go(Screen.PERMS) }.apply { setPadding(ui.dp(22), ui.dp(10), ui.dp(22), ui.dp(10)) },
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        return p
+    }
+
+    /** Segmented platform tabs (TikTok / 抖音 / 小紅書, minus the ones hidden by compliance). */
+    private fun platformTabs(): View? {
+        val vis = visiblePlatforms()
+        if (vis.size < 2) return null
+        val cur = currentTab()
+        val bar = ui.row().apply { setPadding(ui.dp(3), ui.dp(3), ui.dp(3), ui.dp(3)); background = ui.shape(Color.argb(90, 0, 0, 0), 10, C.BORDER) }
+        vis.forEach { p ->
+            val on = p.id == cur
+            val tab = ui.text(platformName(p.id), 13f, if (on) C.ON_ACCENT else if (p.live) C.TEXT else C.SUB, true).apply {
+                gravity = Gravity.CENTER; setPadding(0, ui.dp(7), 0, ui.dp(7))
+                background = if (on) ui.shape(C.ACCENT, 8) else null
+                isClickable = true
+                setOnClickListener { if (platformTab != p.id) { platformTab = p.id; render() } }
+            }
+            bar.addView(tab, ui.weight())
+        }
+        return bar
+    }
+
+    private fun emptyBox(title: String, sub: String, warn: Boolean, btn: View? = null): View {
+        val b = ui.col().apply { gravity = Gravity.CENTER_HORIZONTAL; setPadding(ui.dp(8), ui.dp(18), ui.dp(8), ui.dp(14)) }
+        b.addView(ui.text(title, 15f, if (warn) C.WARN else C.TEXT, true).apply { gravity = Gravity.CENTER }, ui.lp(bottom = 6))
+        b.addView(ui.text(sub, 13f, C.SUB).apply { gravity = Gravity.CENTER }, ui.lp(bottom = if (btn != null) 14 else 0))
+        if (btn != null) b.addView(btn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        return b
+    }
+
+    private fun platformPanel(): View {
+        val p = ui.panel()
+        platformTabs()?.let { p.addView(it, ui.lp(top = 0).apply { setMargins(ui.dp(8), ui.dp(8), ui.dp(8), 0) }) }
+        val body = ui.col().apply { setPadding(ui.dp(12), ui.dp(10), ui.dp(12), ui.dp(12)) }
+        p.addView(body)
+        val vis = visiblePlatforms()
+        if (vis.isEmpty()) { body.addView(emptyBox(tr("暫無可用平台", "No platform available"), "", false)); return p }
+        val tab = currentTab()
+        val name = platformName(tab)
+        if (allPlatforms.firstOrNull { it.id == tab }?.live != true) {
+            body.addView(emptyBox(tr("即將推出", "Coming soon"), tr("$name 任務正在開發中", "$name tasks are on the way"), false))
+            return p
+        }
+        val createBtn = { enabled: Boolean ->
+            ui.small(tr("＋ 創建任務", "＋ Create task"), if (enabled) C.ON_ACCENT else C.TEXT, if (enabled) C.ACCENT else C.SURFACE, if (enabled) null else C.BORDER, enabled) { newTask() }
+                .apply { setPadding(ui.dp(18), ui.dp(9), ui.dp(18), ui.dp(9)) }
+        }
+        if (!tiktokInstalled()) {
+            body.addView(emptyBox(tr("未檢測到 TikTok 應用", "TikTok app not found"),
+                tr("請先在這臺手機上安裝 TikTok，再創建任務", "Install TikTok on this phone first, then create a task"), true, createBtn(false)))
+            return p
+        }
+        val acct = accountRow()
+        if (acct != null) {
+            body.addView(acct, ui.lp(bottom = 8)); body.addView(ui.divider(), ui.lp(bottom = 10))
+        } else {
+            val w = ui.col().apply { setPadding(ui.dp(10), ui.dp(8), ui.dp(10), ui.dp(8)); background = ui.shape(ui.alpha(C.WARN, 14), 10, ui.alpha(C.WARN, 80)) }
+            w.addView(ui.text(tr("未檢測到 TikTok 帳號", "No TikTok account detected yet"), 13f, C.WARN, true))
+            w.addView(ui.text(tr("請在這臺手機上打開 TikTok 並登錄。第一次運行時會自動識別帳號。",
+                "Open TikTok on this phone and log in. The first run detects the account by itself."), 12f, C.SUB))
+            body.addView(w, ui.lp(bottom = 10))
+        }
+        val t = taskFor("tiktok")
+        if (t == null) {
+            body.addView(emptyBox(tr("TikTok 還沒有任務", "No TikTok task yet"), tr("每個平台可以建 1 個任務", "One task per platform"), false, createBtn(true)))
+            return p
+        }
+        taskBlock(t, body)
+        return p
+    }
+
+    private fun isKeywordMode(t: JSONObject): Boolean {
+        val c = t.optJSONObject("config") ?: JSONObject()
+        return if (t.optString("script_id") == LEAD) c.optString("mode") != "accounts" else c.optString("comment_mode") == "keywords"
+    }
+    private fun strs(a: JSONArray?): List<String> = if (a == null) emptyList() else (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() }
+    private fun keywordsOf(t: JSONObject) = strs(t.optJSONObject("config")?.optJSONArray("keywords"))
+    private fun targetsOf(t: JSONObject): List<String> {
+        val c = t.optJSONObject("config") ?: JSONObject()
+        return strs(if (t.optString("script_id") == LEAD) c.optJSONArray("seed_accounts") else c.optJSONArray("urls"))
+    }
+    private fun targetLabel(t: JSONObject) = when {
+        isKeywordMode(t) -> tr("關鍵詞", "Keywords")
+        t.optString("script_id") == LEAD -> tr("同行帳號", "Competitors")
+        else -> tr("鏈接", "Links")
+    }
+    private fun targetText(t: JSONObject): String {
+        val l = if (isKeywordMode(t)) keywordsOf(t) else targetsOf(t).map { it.removePrefix("https://").removePrefix("www.") }
+        return l.joinToString(tr("、", ", ")).ifEmpty { "—" }
+    }
+    private fun modeText(t: JSONObject) = if (isKeywordMode(t)) tr("關鍵詞模式", "Keyword mode") else tr("精準模式", "Precise mode")
+
+    private fun scheduleText(t: JSONObject): String = when (val k = Schedule.kind(t)) {
+        is Schedule.Kind.Every -> when (k.hours) {
+            0.5 -> tr("每 30 分鐘", "Every 30 min"); 1.0 -> tr("每 1 小時", "Every hour")
+            else -> tr("每 ${k.hours.toInt()} 小時", "Every ${k.hours.toInt()} hours")
+        }
+        is Schedule.Kind.Daily -> tr("每天 ", "Daily at ") + "%02d:%02d".format(k.at.hour, k.at.minute)
+        Schedule.Kind.Manual -> tr("手動", "Manual")
+    }
+
+    private fun fmtNum(n: Long) = String.format(java.util.Locale.US, "%,d", n)
+    private fun fmtWhen(ms: Long): String {
+        val z = ZoneId.systemDefault()
+        val d = java.time.Instant.ofEpochMilli(ms).atZone(z)
+        val today = java.time.LocalDate.now(z)
+        val hm = "%02d:%02d".format(d.hour, d.minute)
+        return when (d.toLocalDate()) {
+            today -> tr("今天 ", "Today ") + hm
+            today.plusDays(1) -> tr("明天 ", "Tomorrow ") + hm
+            today.minusDays(1) -> tr("昨天 ", "Yesterday ") + hm
+            else -> "%02d/%02d ".format(d.monthValue, d.dayOfMonth) + hm
+        }
+    }
+    private fun fmtDur(ms: Long): String {
+        val m = ms / 60_000
+        return if (m < 1) tr("不到 1 分鐘", "< 1 min") else tr("$m 分鐘", "$m min")
+    }
+
+    private fun doneSlots(): Set<String> =
+        getSharedPreferences("nc_slots", MODE_PRIVATE).getStringSet("done", emptySet()) ?: emptySet()
+
+    private fun lastRunText(t: JSONObject): String {
+        val st = Prefs.taskStats(t.optString("id")) ?: return "—"
+        val at = st.optLong("last_started_at").takeIf { it > 0 } ?: return "—"
+        return fmtWhen(at) + when (st.optString("last_status")) {
+            "stopped" -> tr("（已停止）", " (stopped)")
+            "error", "rejected" -> tr("（出錯）", " (error)")
+            else -> ""
+        }
+    }
+
+    private fun nextRunText(t: JSONObject): String {
+        if (Prefs.overLimit) return "—"
+        val id = t.optString("id")
+        val at = Schedule.nextRunAt(t, Prefs.lastStart(id), doneSlots()) ?: return tr("手動運行", "Run manually")
+        return if (at - System.currentTimeMillis() < 60_000) tr("馬上", "Now") else fmtWhen(at)
+    }
+
+    /** "點讚 1,286 · 回覆 174" / "新客戶 214 · 關注 120 · 評論 86". */
+    private fun countsText(sid: String, c: JSONObject?): String {
+        val m = c ?: JSONObject()
+        return if (sid == LEAD) tr("新客戶 ${fmtNum(m.optLong("lead_new"))} · 關注 ${fmtNum(m.optLong("follow"))} · 評論 ${fmtNum(m.optLong("comment"))}",
+            "${fmtNum(m.optLong("lead_new"))} leads · ${fmtNum(m.optLong("follow"))} follows · ${fmtNum(m.optLong("comment"))} comments")
+        else tr("點讚 ${fmtNum(m.optLong("like"))} · 回覆 ${fmtNum(m.optLong("comment"))}", "${fmtNum(m.optLong("like"))} likes · ${fmtNum(m.optLong("comment"))} replies")
+    }
+
+    private fun taskBlock(t: JSONObject, body: LinearLayout) {
+        val sid = t.optString("script_id")
+        body.addView(ui.text(taskName(t), 15f, C.TEXT, true).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END }, ui.lp(bottom = 4))
+        body.addView(ui.kv(tr("模式", "Mode"), modeText(t)))
+        body.addView(ui.kv(targetLabel(t), targetText(t)))
+        body.addView(ui.kv(tr("定時", "Schedule"), scheduleText(t)))
+        body.addView(ui.kv(tr("最近運行", "Last run"), lastRunText(t)))
+        body.addView(ui.kv(tr("下次運行", "Next run"), nextRunText(t)))
+        body.addView(ui.divider(), ui.lp(top = 6, bottom = 6))
+        body.addView(ui.text(tr("累計完成", "Total done"), 12f, C.SUB))
+        body.addView(ui.text(countsText(sid, Prefs.taskStats(t.optString("id"))?.optJSONObject("totals")), 13f, C.TEXT), ui.lp(bottom = 12))
+
+        val id = t.optString("id")
+        val btns = ui.row()
+        btns.addView(ui.small(tr("刪除", "Delete"), C.DANGER, C.SURFACE, ui.alpha(C.DANGER, 100)) { confirmDelete(t) }, ui.weight())
+        btns.addView(gap(8))
+        btns.addView(ui.small(tr("查看", "View")) { go(Screen.DETAIL) }, ui.weight())
+        btns.addView(gap(8))
+        btns.addView(ui.small(tr("▶ 運行", "▶ Run"), C.ON_ACCENT, C.ACCENT, null, tiktokInstalled()) { runTask(id) }, ui.weight())
+        body.addView(btns)
+    }
+
+    private fun runTask(id: String) = withRunPerms { RunService.start(this, RunService.ACTION_RUN_NOW, id); toast(tr("已開始", "Started")) }
+
+    private fun confirmDelete(t: JSONObject) {
+        confirm(tr("刪除這個任務？", "Delete this task?"),
+            tr("「${taskName(t)}」刪除後不會再自動運行，運行記錄保留。", "\"${taskName(t)}\" will stop running. Run history is kept."),
+            tr("刪除", "Delete")) {
             val list = Prefs.tasks().filter { it.optString("id") != t.optString("id") }
-            pushTasks(list, tr("已刪除", "Deleted"))
-        })
+            pushTasks(list, tr("已刪除", "Deleted"), Screen.HOME)
+        }
+    }
+
+    // ---------- running state ----------
+    private data class Item(val icon: String, val key: String)
+    private fun progressItems(sid: String) = if (sid == LEAD)
+        listOf(Item("👤", "lead_new"), Item("👍", "like"), Item("💬", "comment"), Item("➕", "follow"))
+        else listOf(Item("👍", "like"), Item("💬", "comment"))
+
+    /** "進度 👍 6/100 💬 1/15" and "消耗 💎 4,820". */
+    private fun progressBox(sid: String, big: Boolean): View {
+        val live = RunService.liveProgress() ?: JSONObject()
+        val c = live.optJSONObject("counts") ?: JSONObject()
+        val tg = live.optJSONObject("targets") ?: JSONObject()
+        val box = ui.col().apply { setPadding(ui.dp(12), ui.dp(8), ui.dp(12), ui.dp(10)) }
+        val items = progressItems(sid).filter { tg.optLong(it.key) > 0 || c.optLong(it.key) > 0 }
+            .joinToString("   ") { "${it.icon} ${fmtNum(c.optLong(it.key))}/${fmtNum(tg.optLong(it.key))}" }.ifEmpty { "—" }
+        fun line(k: String, v: String) = ui.row().apply {
+            setPadding(0, ui.dp(2), 0, ui.dp(2))
+            addView(ui.text(k, if (big) 13f else 12f, C.ACCENT, true).apply { setPadding(0, 0, ui.dp(12), 0) })
+            addView(ui.mono(v, if (big) 14f else 13f, C.TEXT, true).apply { gravity = Gravity.END }, ui.weight())
+        }
+        box.addView(line(tr("進度", "Progress"), items))
+        box.addView(line(tr("消耗", "Used"), "💎 " + fmtNum(live.optLong("credits"))))
+        return box
+    }
+
+    /** Friendly step lines of a run (time + sentence), newest last. */
+    private fun stepLines(runId: String?): List<Pair<Long, String>> {
+        if (runId == null) return emptyList()
+        return RunLog.recent().filter { it.runId == runId && it.level == "step" }.mapNotNull { l -> Steps.text(l.msg)?.let { l.ts to it } }
+    }
+
+    private fun stepList(runId: String?, max: Int, liveDot: Boolean): View {
+        val box = ui.col()
+        val lines = stepLines(runId).takeLast(max)
+        if (lines.isEmpty()) { box.addView(ui.text(if (liveDot) tr("準備中…", "Getting ready…") else tr("暫無明細", "No details"), 13f, C.SUB)); return box }
+        val fmt = java.text.SimpleDateFormat("HH:mm", java.util.Locale.US)
+        lines.forEachIndexed { i, (ts, txt) ->
+            val last = i == lines.size - 1
+            val r = ui.row().apply { gravity = Gravity.TOP; setPadding(0, ui.dp(3), 0, ui.dp(3)) }
+            r.addView(ui.mono(fmt.format(java.util.Date(ts)), 12f, C.SUB).apply { setPadding(0, ui.dp(1), ui.dp(10), 0) })
+            r.addView(ui.text(txt + if (last && liveDot) "  ●" else "", 13f, if (last) C.TEXT else C.SUB), ui.weight())
+            if (!last) r.alpha = 0.55f + 0.45f * (i + 1) / lines.size
+            box.addView(r)
+        }
+        return box
+    }
+
+    private fun runPanel(): View {
+        val t = taskById(RunService.runningTaskId)
+        val sid = t?.optString("script_id") ?: CL
+        val name = t?.let { taskName(it) } ?: scriptTitle(sid)
+        val p = ui.panel()
+        val head = ui.col().apply { background = ui.shape(ui.alpha(C.ACCENT, 18), 10, ui.alpha(C.ACCENT, 90)) }
+        val mq = TextView(this).apply {
+            text = "●  " + tr("正在運行", "Running") + " TikTok · " + name + "          "
+            textSize = 13f; setTextColor(C.ACCENT); typeface = android.graphics.Typeface.DEFAULT_BOLD
+            isSingleLine = true; ellipsize = TextUtils.TruncateAt.MARQUEE; marqueeRepeatLimit = -1
+            isFocusable = true; isFocusableInTouchMode = true; isSelected = true; isHorizontalFadingEdgeEnabled = true
+            setPadding(ui.dp(12), ui.dp(8), ui.dp(12), ui.dp(8))
+        }
+        head.addView(mq)
+        head.addView(ui.divider(ui.alpha(C.ACCENT, 50)))
+        head.addView(progressBox(sid, false))
+        p.addView(head, ui.lp().apply { setMargins(ui.dp(8), ui.dp(8), ui.dp(8), 0) })
+        val body = ui.col().apply { setPadding(ui.dp(12), ui.dp(10), ui.dp(12), ui.dp(12)) }
+        accountRow()?.let { body.addView(it, ui.lp(bottom = 8)); body.addView(ui.divider(), ui.lp(bottom = 8)) }
+        body.addView(stepList(RunService.runningRunId, 6, true), ui.lp(bottom = 12))
+        val r = ui.row().apply { gravity = Gravity.CENTER }
+        r.addView(ui.small(tr("■ 停止", "■ Stop"), Color.WHITE, C.DANGER, null) { RunService.start(this, RunService.ACTION_STOP_RUN) }
+            .apply { setPadding(ui.dp(24), ui.dp(7), ui.dp(24), ui.dp(7)); textSize = 13f })
+        body.addView(r)
+        if (t != null) body.addView(ui.link(tr("查看詳情 ›", "Details ›"), C.SUB) { go(Screen.DETAIL) }.apply { gravity = Gravity.CENTER }, ui.lp(top = 4))
+        p.addView(body)
+        return p
+    }
+
+    // ---------- task detail ----------
+    private fun statusName(s: String) = when (s) {
+        "done", "ok", "completed" -> tr("完成", "Done")
+        "stopped" -> tr("已停止", "Stopped")
+        "error" -> tr("出錯", "Error")
+        "rejected" -> tr("未運行", "Not run")
+        "challenge" -> tr("被驗證打斷", "Verification")
+        else -> s
+    }
+    private fun statusColor(s: String) = when (s) { "done", "ok", "completed" -> C.ACCENT; "stopped" -> C.WARN; else -> C.DANGER }
+
+    private fun renderDetail() {
+        val t = taskFor("tiktok") ?: taskById(RunService.runningTaskId) ?: run { go(Screen.HOME); return }
+        val id = t.optString("id")
+        val sid = t.optString("script_id")
+        val running = RunService.runningTaskId == id
+        topBar(tr("任務詳情", "Task details")) { go(Screen.HOME) }
+
+        val head = ui.card(selected = running)
+        val tr0 = ui.row()
+        tr0.addView(ui.badge("TT", Color.BLACK, Color.WHITE, 36).apply { background = ui.shape(Color.BLACK, 18, C.CYAN, 2) })
+        val tt = ui.col().apply { setPadding(ui.dp(10), 0, 0, 0) }
+        tt.addView(ui.text(taskName(t), 17f, C.TEXT, true))
+        tt.addView(ui.mono(tr("設備ID ", "Device ") + Prefs.deviceId, 11f, C.SUB).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END })
+        tr0.addView(tt, ui.weight())
+        head.addView(tr0, ui.lp(bottom = 12))
+        val b = binding()
+        head.addView(ui.kv(tr("帳號", "Account"), (listOf(b.optString("nickname"), b.optString("display_id")).filter { it.isNotEmpty() }.joinToString(" ")
+            .ifEmpty { tr("未識別", "Not detected") }) + " · " + Build.MANUFACTURER + "/" + Build.MODEL))
+        head.addView(ui.kv(tr("模式", "Mode"), (if (isKeywordMode(t)) "🔎 " else "🎯 ") + modeText(t)))
+        head.addView(ui.kv(targetLabel(t), targetText(t)))
+        head.addView(ui.kv(tr("每次上限", "Per run"), if (sid == LEAD)
+            tr("新客戶 ${t.optJSONObject("config")?.optInt("leads_per_run", 30) ?: 30} · 關注 ${t.optInt("max_follows")} · 評論 ${t.optInt("max_comments")}",
+                "${t.optJSONObject("config")?.optInt("leads_per_run", 30) ?: 30} leads · ${t.optInt("max_follows")} follows · ${t.optInt("max_comments")} comments")
+            else tr("點讚 ${t.optInt("max_likes")} · 回覆 ${t.optInt("max_comments")}", "${t.optInt("max_likes")} likes · ${t.optInt("max_comments")} replies")))
+        head.addView(ui.kv(tr("人設", "Persona"), t.optString("persona").ifEmpty { "—" }))
+        head.addView(ui.kv(tr("定時", "Schedule"), scheduleText(t) + if (Schedule.kind(t) !is Schedule.Kind.Manual) tr(" · 自動運行", " · automatic") else ""))
+        val acts = ui.row().apply { setPadding(0, ui.dp(12), 0, 0) }
+        if (running) {
+            acts.addView(ui.text("● " + tr("運行中", "Running"), 14f, C.ACCENT, true), ui.weight())
+            acts.addView(ui.small(tr("停止", "Stop"), Color.WHITE, C.DANGER, null) { RunService.start(this, RunService.ACTION_STOP_RUN) }.apply { setPadding(ui.dp(22), ui.dp(9), ui.dp(22), ui.dp(9)) })
+        } else {
+            acts.addView(ui.small(tr("編輯", "Edit")) { editTask(t, Screen.DETAIL) }, ui.weight())
+            acts.addView(gap(8))
+            acts.addView(ui.small(tr("刪除", "Delete"), C.DANGER, C.SURFACE, ui.alpha(C.DANGER, 100)) { confirmDelete(t) }, ui.weight())
+            acts.addView(gap(8))
+            acts.addView(ui.small(tr("立即運行", "Run now"), C.ON_ACCENT, C.ACCENT, null, tiktokInstalled()) { runTask(id) }, ui.weight())
+        }
+        head.addView(acts)
+        add(head, bottom = 12)
+
+        if (running) {
+            val g = ui.col().apply { background = ui.shape(ui.alpha(C.ACCENT, 18), 14, ui.alpha(C.ACCENT, 90)) }
+            g.addView(ui.text("● " + tr("本次運行", "This run"), 13f, C.ACCENT, true).apply { setPadding(ui.dp(12), ui.dp(10), ui.dp(12), 0) })
+            g.addView(progressBox(sid, true))
+            add(g, bottom = 12)
+        }
+
+        // stats grid
+        val st = Prefs.taskStats(id)
+        val cells = listOf(
+            tr("累計完成", "Total done") to countsText(sid, st?.optJSONObject("totals")),
+            tr("累計消耗", "Total used") to "💎 " + fmtNum(st?.optLong("credits") ?: 0),
+            tr("上次完成", "Last run did") to (st?.let { countsText(sid, it.optJSONObject("last_counts")) } ?: "—"),
+            tr("上次消耗", "Last run used") to (st?.let { "💎 " + fmtNum(it.optLong("last_credits")) } ?: "—"),
+            tr("上次運行", "Last run") to lastRunText(t),
+            tr("下次運行", "Next run") to nextRunText(t),
+        )
+        cells.chunked(2).forEach { pair ->
+            val r = ui.row().apply { gravity = Gravity.TOP }
+            pair.forEachIndexed { i, (k, v) ->
+                val c = ui.col(12).apply { background = ui.shape(C.SURFACE, 14, C.BORDER) }
+                c.addView(ui.text(k, 12f, C.SUB))
+                c.addView(ui.text(v, 14f, C.TEXT, true), ui.lp(top = 4))
+                r.addView(c, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply { if (i == 0) marginEnd = ui.dp(10) })
+            }
+            add(r, bottom = 10)
+        }
+
+        // current run steps (or the last run's)
+        val log = ui.card()
+        log.addView(ui.text(tr("當前運行明細", "Current run"), 15f, C.TEXT, true), ui.lp(bottom = 10))
+        val rid = if (running) RunService.runningRunId else st?.optString("last_run_id")?.takeIf { it.isNotEmpty() }
+        log.addView(stepList(rid, 40, running))
+        if (!running) log.addView(ui.sub(tr("沒有運行中的任務，上面是最近一次的明細", "Nothing running — above is the latest run")), ui.lp(top = 8))
+        add(log, bottom = 12)
+
+        // recent runs
+        val runs = Prefs.runHistory().filter { it.optString("task_id") == id }.take(10)
+        val rc = ui.card()
+        rc.addView(ui.text(tr("最近運行", "Recent runs"), 15f, C.TEXT, true), ui.lp(bottom = 6))
+        if (runs.isEmpty()) rc.addView(ui.sub(tr("還沒有運行過", "No runs yet")))
+        runs.forEachIndexed { i, r ->
+            if (i > 0) rc.addView(ui.divider())
+            val row = ui.col().apply { setPadding(0, ui.dp(10), 0, ui.dp(10)); isClickable = true; setOnClickListener { showRunSteps(r) } }
+            val l1 = ui.row()
+            l1.addView(ui.text(fmtWhen(r.optLong("started_at")) + if (r.optBoolean("dry_run")) tr("（試跑）", " (dry run)") else "", 14f, C.TEXT, true), ui.weight())
+            l1.addView(ui.pill(statusName(r.optString("status")), statusColor(r.optString("status"))))
+            row.addView(l1)
+            row.addView(ui.text(countsText(sid, r.optJSONObject("counts")) + " · 💎 " + fmtNum(r.optLong("credits")) + " · " + fmtDur(r.optLong("duration_ms")), 12f, C.SUB), ui.lp(top = 3))
+            rc.addView(row)
+        }
+        add(rc, bottom = 12)
+        add(ui.link(tr("試跑（不扣費）", "Dry run (free)"), C.SUB) {
+            withRunPerms { RunService.start(this, RunService.ACTION_DRY_RUN, id); toast(tr("試跑開始", "Dry run started")) }
+        }.apply { gravity = Gravity.CENTER })
+    }
+
+    private fun showRunSteps(r: JSONObject) {
+        val (d, box) = dialogBox()
+        box.addView(ui.h2(fmtWhen(r.optLong("started_at")) + " · " + statusName(r.optString("status"))), ui.lp(bottom = 12))
+        box.addView(stepList(r.optString("run_id"), 40, false), ui.lp(bottom = 14))
+        box.addView(ui.secondary(tr("關閉", "Close")) { d.dismiss() })
         showDialog(d, box)
     }
 
@@ -508,7 +1028,7 @@ class MainActivity : AppCompatActivity() {
         }
         item(tr("TikTok 帳號", "TikTok account"), tiktokHandle().ifEmpty { tr("未識別", "Not detected") }, onClick = null)
         item(tr("權限", "Permissions"), if (missing.isEmpty()) tr("已開啟", "All on") else tr("缺 ${missing.size} 項", "${missing.size} missing"),
-            if (missing.isEmpty()) C.ACCENT else C.WARN) { showPermDialog(null) }
+            if (missing.isEmpty()) C.ACCENT else C.WARN) { go(Screen.PERMS) }
         item(tr("語言", "Language"), I18n.lang.label) { chooseLanguage() }
         item(tr("運行記錄", "Run log"), "") { go(Screen.LOGS) }
         item(tr("聯繫客服", "Contact support"), "") { sendDiagnostics() }
@@ -573,61 +1093,14 @@ class MainActivity : AppCompatActivity() {
         showDialog(d, box)
     }
 
-    // ---------- new task: 1 platform ----------
-    private fun newTask() = withPerms {
-        draft = JSONObject().put("enabled", true)
-        go(Screen.PLATFORM)
-    }
-
-    private fun renderPlatform() {
-        topBar(tr("新建任務", "New task"), "1 / 3") { go(Screen.HOME) }
-        add(ui.h1(tr("選平台", "Pick a platform")), bottom = 18)
-        val platforms = listOf(
-            Triple("TikTok", "TT", true), Triple("Instagram", "IG", false), Triple(tr("小紅書", "RedNote"), "紅", false),
-            Triple(tr("抖音", "Douyin"), "抖", false), Triple("YouTube", "YT", false), Triple("X", "X", false),
-        )
-        platforms.chunked(2).forEach { pair ->
-            val r = ui.row()
-            pair.forEachIndexed { i, (name, icon, on) ->
-                val card = ui.card(onClick = if (on) ({ go(Screen.SCRIPT) }) else ({ toast(tr("即將推出", "Coming soon")) }))
-                card.gravity = Gravity.CENTER_HORIZONTAL
-                card.alpha = if (on) 1f else 0.45f
-                card.addView(ui.badge(icon, if (on) Color.BLACK else C.SURFACE2, Color.WHITE, 52).apply {
-                    if (on) background = ui.shape(Color.BLACK, 26, C.CYAN, 2)
-                }, LinearLayout.LayoutParams(ui.dp(52), ui.dp(52)).apply { bottomMargin = ui.dp(10) })
-                card.addView(ui.text(name, 15f, C.TEXT, true).apply { gravity = Gravity.CENTER })
-                if (!on) card.addView(ui.sub(tr("即將推出", "Coming soon")).apply { gravity = Gravity.CENTER })
-                r.addView(card, ui.weight().apply { if (i == 0) marginEnd = ui.dp(10) })
-            }
-            add(r, bottom = 10)
-        }
-    }
-
-    // ---------- new task: 2 script ----------
-    private fun renderScript() {
-        topBar(tr("新建任務", "New task"), "2 / 3") { go(Screen.PLATFORM) }
-        add(ui.h1(tr("選劇本", "Pick a script")), bottom = 18)
-        tiktokScripts.forEach { s ->
-            val card = ui.card(onClick = {
-                draft = (draft ?: JSONObject()).put("script_id", s.id)
-                go(Screen.CONFIG)
-            })
-            val r = ui.row()
-            r.addView(ui.badge(s.badgeText(), s.color, Color.WHITE, 48))
-            val t = ui.col().apply { setPadding(ui.dp(14), 0, 0, 0) }
-            t.addView(ui.text(s.title(), 17f, C.TEXT, true), ui.lp(bottom = 4))
-            t.addView(ui.text(s.desc(), 14f, C.SUB))
-            r.addView(t, ui.weight())
-            card.addView(r)
-            add(card, bottom = 12)
-        }
-    }
-
-    // ---------- new / edit task: 3 settings ----------
+    // ---------- task editor ----------
     private data class Level(val likes: Int, val comments: Int, val follows: Int, val leads: Int)
     private fun levelOf(script: String, l: String) = when (script) {
-        "tiktok_comment_like" -> when (l) { "low" -> Level(30, 5, 0, 0); "high" -> Level(300, 30, 0, 0); else -> Level(100, 15, 0, 0) }
+        CL -> when (l) { "low" -> Level(30, 5, 0, 0); "high" -> Level(300, 30, 0, 0); else -> Level(100, 15, 0, 0) }
         else -> when (l) { "low" -> Level(10, 5, 10, 10); "high" -> Level(100, 30, 50, 100); else -> Level(30, 15, 30, 30) }
+    }
+    private fun levelName(k: String) = when (k) {
+        "low" -> tr("少", "Few"); "high" -> tr("多", "Many"); else -> tr("中", "Normal")
     }
     private fun levelFromCaps(t: JSONObject): String {
         val l = t.optJSONObject("config")?.optString("level").orEmpty()
@@ -635,47 +1108,71 @@ class MainActivity : AppCompatActivity() {
         val likes = t.optInt("max_likes", 100)
         return if (likes <= 30) "low" else if (likes >= 200) "high" else "mid"
     }
-    private fun whereOf(c: JSONObject): List<String> =
-        listOf(c.optJSONArray("urls"), c.optJSONArray("seed_accounts"), c.optJSONArray("keywords"))
-            .flatMap { a -> if (a == null) emptyList() else (0 until a.length()).map { a.optString(it) } }
-            .map { it.removePrefix("https://www.tiktok.com/") }.filter { it.isNotBlank() }
-    private fun slotsOf(t: JSONObject): List<String> {
-        val a = t.optJSONArray("slots")
-        val l = if (a == null) emptyList() else (0 until a.length()).map { a.optString(it) }
-        return l.ifEmpty { listOf("09:30", "20:00") }
+
+    private fun newTask() {
+        if (taskFor(currentTab()) != null) { toast(tr("每個平台只能建 1 個任務", "One task per platform")); return }
+        draft = JSONObject().put("script_id", CL).put("schedule", JSONObject().put("kind", "every").put("hours", 3))
+        configBack = Screen.HOME
+        go(Screen.CONFIG)
     }
 
-    private fun editTask(t: JSONObject) {
+    private fun editTask(t: JSONObject, back: Screen) {
         draft = JSONObject(t.toString()).put("_editing", true)
+        configBack = back
         go(Screen.CONFIG)
     }
 
     private fun renderConfig() {
-        val d = draft ?: JSONObject().also { draft = it }
+        val d = draft ?: JSONObject().put("script_id", CL).also { draft = it }
         val editing = d.optBoolean("_editing")
-        val script = d.optString("script_id").ifEmpty { "tiktok_comment_like" }
-        val s = scriptOf(script)
-        topBar(if (editing) tr("編輯任務", "Edit task") else tr("新建任務", "New task"), if (editing) null else "3 / 3") {
-            go(if (editing) Screen.HOME else Screen.SCRIPT)
+        topBar(if (editing) tr("編輯任務", "Edit task") else tr("創建任務", "Create task")) { go(configBack) }
+        add(ui.sub("TikTok · " + tr("每個平台 1 個任務", "one task per platform")), bottom = 16)
+
+        var script = d.optString("_script").ifEmpty { d.optString("script_id").ifEmpty { CL } }
+        // draft keeps both lists, so switching mode / script does not lose what was typed
+        if (!d.has("_kw")) d.put("_kw", keywordsOf(d).joinToString("\n"))
+        if (!d.has("_tg")) d.put("_tg", targetsOf(d).joinToString("\n"))
+        var kwMode = if (d.has("_kwMode")) d.optBoolean("_kwMode") else (d.optJSONObject("config") == null || isKeywordMode(d))
+
+        // script
+        add(ui.section(tr("劇本", "Script")), bottom = 8)
+        val sRow = ui.row()
+        listOf(CL, LEAD).forEachIndexed { i, s ->
+            val c = ui.card(selected = s == script, onClick = { d.put("_script", s); render() })
+            c.addView(ui.text(scriptShort(s), 15f, if (s == script) C.ACCENT else C.TEXT, true))
+            c.addView(ui.text(scriptDesc(s), 12f, C.SUB), ui.lp(top = 2))
+            sRow.addView(c, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply { if (i == 0) marginEnd = ui.dp(10) })
         }
+        add(sRow, bottom = 18)
+        val cl = script == CL
 
-        val head = ui.row()
-        head.addView(ui.badge(s.badgeText(), s.color, Color.WHITE, 44))
-        val ht = ui.col().apply { setPadding(ui.dp(12), 0, 0, 0) }
-        ht.addView(ui.h2(s.title()))
-        head.addView(ht, ui.weight())
-        add(head, bottom = 20)
+        // mode
+        add(ui.section(tr("模式", "Mode")), bottom = 8)
+        val mRow = ui.row()
+        mRow.addView(ui.chip(tr("關鍵詞模式", "Keyword mode"), kwMode) { d.put("_kwMode", true); render() }, ui.weight().apply { marginEnd = ui.dp(8) })
+        mRow.addView(ui.chip(tr("精準模式", "Precise mode"), !kwMode) { d.put("_kwMode", false); render() }, ui.weight())
+        add(mRow, bottom = 6)
+        add(ui.sub(when {
+            kwMode -> tr("按關鍵詞搜視頻，在評論區互動", "Searches videos by keyword and works their comments")
+            cl -> tr("只在你給的作品鏈接下互動", "Works only the videos you link")
+            else -> tr("從同行帳號的粉絲和評論裡找客戶", "Finds leads among a competitor's commenters")
+        }), bottom = 12)
 
-        val c = d.optJSONObject("config") ?: JSONObject()
-        val cl = script == "tiktok_comment_like"
-
-        add(ui.section(if (cl) tr("關鍵詞 / 鏈接", "Keywords / links") else tr("關鍵詞 / 同行帳號", "Keywords / competitor accounts")), bottom = 8)
-        val where = ui.input(
-            if (cl) tr("每行一個，例如 latte art", "One per line, e.g. latte art") else tr("每行一個，例如 latte art 或 @rival", "One per line, e.g. latte art or @rival"),
-            whereOf(c).joinToString("\n") { if (it.startsWith("@") && cl) "https://www.tiktok.com/$it" else it }, multi = true,
-        )
+        val label = when { kwMode -> tr("關鍵詞（每行一個）", "Keywords (one per line)"); cl -> tr("作品鏈接（每行一個）", "Video links (one per line)"); else -> tr("同行帳號（每行一個）", "Competitor accounts (one per line)") }
+        add(ui.section(label), bottom = 8)
+        val where = ui.input(when {
+            kwMode -> tr("例如 latte art", "e.g. latte art")
+            cl -> "https://www.tiktok.com/@name/video/…"
+            else -> tr("例如 @rival", "e.g. @rival")
+        }, if (kwMode) d.optString("_kw") else d.optString("_tg"), multi = true)
+        where.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) { d.put(if (kwMode) "_kw" else "_tg", s?.toString() ?: "") }
+        })
         add(where, bottom = 20)
 
+        // amount
         add(ui.section(tr("數量", "Amount")), bottom = 8)
         var level = d.optString("_level").ifEmpty { levelFromCaps(d) }
         val amount = ui.sub("")
@@ -687,100 +1184,137 @@ class MainActivity : AppCompatActivity() {
                 chips.addView(ch, ui.weight().apply { marginEnd = ui.dp(8) })
             }
             val lv = levelOf(script, level)
-            amount.text = if (cl) tr("點讚 ${lv.likes} · 回覆 ${lv.comments}", "${lv.likes} likes · ${lv.comments} replies")
-                          else tr("客戶 ${lv.leads} · 關注 ${lv.follows} · 點讚 ${lv.likes} · 評論 ${lv.comments}",
-                                  "${lv.leads} leads · ${lv.follows} follows · ${lv.likes} likes · ${lv.comments} comments")
+            amount.text = if (cl) tr("每次：點讚 ${lv.likes} · 回覆 ${lv.comments}", "Per run: ${lv.likes} likes · ${lv.comments} replies")
+                          else tr("每次：客戶 ${lv.leads} · 關注 ${lv.follows} · 點讚 ${lv.likes} · 評論 ${lv.comments}",
+                                  "Per run: ${lv.leads} leads · ${lv.follows} follows · ${lv.likes} likes · ${lv.comments} comments")
         }
         drawChips()
         add(chips, bottom = 8)
         add(amount, bottom = 20)
 
+        // persona
         add(ui.section(tr("人設（選填）", "Persona (optional)")), bottom = 8)
-        val persona = ui.input(tr("例如：東京咖啡店", "e.g. a coffee shop in Tokyo"), d.optString("persona"))
+        val persona = ui.input(tr("例如：東京咖啡店店員，語氣輕鬆", "e.g. a barista in Tokyo, relaxed tone"), d.optString("persona"))
+        persona.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) { d.put("persona", s?.toString() ?: "") }
+        })
         add(persona, bottom = 20)
 
+        // schedule
         add(ui.section(tr("定時", "Schedule")), bottom = 8)
-        var auto = d.optBoolean("enabled", true)
-        val slots = slotsOf(d).toMutableList()
+        var kind = Schedule.kind(d)
         val schedBox = ui.col()
         fun drawSched() {
             schedBox.removeAllViews()
-            val modes = ui.row()
-            modes.addView(ui.chip(tr("每天", "Daily"), auto) { auto = true; drawSched() }, ui.weight().apply { marginEnd = ui.dp(8) })
-            modes.addView(ui.chip(tr("手動", "Manual"), !auto) { auto = false; drawSched() }, ui.weight())
-            schedBox.addView(modes, ui.lp(bottom = 10))
-            if (auto) {
-                val times = ui.row()
-                slots.forEachIndexed { i, tm ->
-                    times.addView(ui.secondary(tm) {
-                        val (h, m) = tm.split(":").map { it.toInt() }
-                        TimePickerDialog(this, android.R.style.Theme_DeviceDefault_Dialog, { _, hh, mm ->
-                            slots[i] = "%02d:%02d".format(hh, mm); drawSched()
-                        }, h, m, true).show()
-                    }, ui.weight().apply { marginEnd = ui.dp(8) })
+            val opts: List<Pair<String, Schedule.Kind>> = listOf(
+                tr("每30分鐘", "30 min") to Schedule.Kind.Every(0.5),
+                tr("每1小時", "1 hour") to Schedule.Kind.Every(1.0),
+                tr("每3小時", "3 hours") to Schedule.Kind.Every(3.0),
+                tr("每6小時", "6 hours") to Schedule.Kind.Every(6.0),
+                tr("每天定時", "Daily") to Schedule.Kind.Daily((kind as? Schedule.Kind.Daily)?.at ?: LocalTime.of(9, 30)),
+                tr("手動", "Manual") to Schedule.Kind.Manual,
+            )
+            opts.chunked(3).forEach { rowOpts ->
+                val r = ui.row()
+                rowOpts.forEachIndexed { i, (lab, k) ->
+                    val on = when { k is Schedule.Kind.Daily -> kind is Schedule.Kind.Daily; else -> k == kind }
+                    r.addView(ui.chip(lab, on) { kind = k; d.put("schedule", Schedule.toJson(k)); drawSched() }.apply { textSize = 13f; setPadding(ui.dp(6), ui.dp(10), ui.dp(6), ui.dp(10)) },
+                        ui.weight().apply { if (i < 2) marginEnd = ui.dp(8) })
                 }
-                schedBox.addView(times)
+                schedBox.addView(r, ui.lp(bottom = 8))
             }
+            val k = kind
+            if (k is Schedule.Kind.Daily) {
+                val tm = "%02d:%02d".format(k.at.hour, k.at.minute)
+                schedBox.addView(ui.secondary(tr("每天 $tm 運行（點擊修改）", "Runs daily at $tm (tap to change)")) {
+                    TimePickerDialog(this, android.R.style.Theme_DeviceDefault_Dialog, { _, hh, mm ->
+                        kind = Schedule.Kind.Daily(LocalTime.of(hh, mm)); d.put("schedule", Schedule.toJson(kind)); drawSched()
+                    }, k.at.hour, k.at.minute, true).show()
+                }, ui.lp(top = 2))
+            }
+            schedBox.addView(ui.sub(when (k) {
+                is Schedule.Kind.Every -> tr("從上次開始時間算起，到點自動運行", "Starts again this long after the last start")
+                is Schedule.Kind.Daily -> tr("錯過時間 2 小時內會補跑", "Catches up within 2 hours if missed")
+                Schedule.Kind.Manual -> tr("只在你點「運行」或電腦端發起時運行", "Runs only when you tap Run or start it from the desktop")
+            }), ui.lp(top = 4))
         }
         drawSched()
         add(schedBox, bottom = 28)
 
+        fun lines(s: String) = s.split('\n', ',', '，').map { it.trim() }.filter { it.isNotEmpty() }.distinct()
         fun build(): JSONObject? {
-            val items = where.text.toString().split('\n', ',', '，').map { it.trim() }.filter { it.isNotEmpty() }.distinct()
-            if (items.isEmpty()) { toast(tr("請填關鍵詞", "Add at least one keyword")); return null }
-            val links = items.filter { it.startsWith("http", true) || it.startsWith("@") }
-            val words = items - links.toSet()
+            val words = lines(d.optString("_kw")).take(20)
+            val rawTargets = lines(d.optString("_tg"))
+            val urlRe = Regex("^https://(www\\.|m\\.|vm\\.|vt\\.)?tiktok\\.com/\\S*$", RegexOption.IGNORE_CASE)
+            val targets = if (cl) rawTargets.map { if (it.startsWith("@")) "https://www.tiktok.com/$it" else it }.filter { urlRe.matches(it) }.take(20)
+                else rawTargets.map { if (it.startsWith("http", true) || it.startsWith("@")) it else "@$it" }.take(20)
+            if (kwMode && words.isEmpty()) { toast(tr("請填至少 1 個關鍵詞", "Add at least one keyword")); return null }
+            if (!kwMode && targets.isEmpty()) {
+                toast(if (cl) tr("請填 TikTok 作品鏈接（https://www.tiktok.com/…）", "Add a TikTok video link (https://www.tiktok.com/…)")
+                      else tr("請填至少 1 個同行帳號", "Add at least one competitor account"))
+                return null
+            }
+            if (!kwMode && cl && targets.size < rawTargets.size) toast(tr("不是 TikTok 鏈接的已忽略", "Lines that aren't TikTok links were skipped"))
             val lv = levelOf(script, level)
             val cfg = JSONObject().put("level", level)
             if (cl) {
-                val urls = links.map { if (it.startsWith("@")) "https://www.tiktok.com/$it" else it }
-                cfg.put("comment_mode", if (urls.isNotEmpty()) "precise" else "keywords")
-                    .put("urls", JSONArray(urls)).put("keywords", JSONArray(words))
+                cfg.put("comment_mode", if (kwMode) "keywords" else "precise")
+                    .put("urls", JSONArray(targets)).put("keywords", JSONArray(words))
                     .put("cl_do_like", true).put("cl_do_reply", true)
             } else {
-                cfg.put("mode", if (links.isNotEmpty()) "accounts" else "keywords")
-                    .put("seed_accounts", JSONArray(links)).put("keywords", JSONArray(words))
+                cfg.put("mode", if (kwMode) "keywords" else "accounts")
+                    .put("seed_accounts", JSONArray(targets)).put("keywords", JSONArray(words))
                     .put("leads_per_run", lv.leads)
                     .put("lead_do_like", true).put("lead_do_follow", true).put("lead_do_comment", true)
             }
-            // 默認名照舊用繁體劇本名(跟之前存到服務器的一致,電腦端也按它顯示)
-            val baseName = if (cl) "評論區點讚" else "定向獲客"
-            val name = d.optString("name").ifEmpty { baseName + " · " + items.first().removePrefix("https://www.tiktok.com/").take(20) }
+            // 默認名用繁體(跟服務器、電腦端一致);換了劇本就換成新劇本的默認名
+            val baseName = if (cl) "評論區點讚任務" else "定向獲客任務"
+            val keepName = editing && d.optString("script_id") == script && d.optString("name").isNotEmpty()
+            val sc = Schedule.kind(d)
             return JSONObject()
                 .put("id", d.optString("id").ifEmpty { "t" + System.currentTimeMillis().toString(36) })
-                .put("name", name).put("script_id", script).put("config", cfg)
+                .put("name", if (keepName) d.optString("name") else baseName)
+                .put("script_id", script).put("platform", "tiktok").put("config", cfg)
                 .put("max_likes", lv.likes).put("max_comments", lv.comments).put("max_follows", lv.follows)
-                .put("enabled", auto).put("slots", JSONArray(slots.sorted()))
-                .put("tz", ZoneId.systemDefault().id).put("max_run_minutes", 60)
-                .put("persona", persona.text.toString().take(400))
+                .put("schedule", Schedule.toJson(sc))
+                // legacy fields for apps < 0.6 (the server fills them too)
+                .put("enabled", sc !is Schedule.Kind.Manual)
+                .put("slots", JSONArray(if (sc is Schedule.Kind.Daily) kotlin.collections.listOf("%02d:%02d".format(sc.at.hour, sc.at.minute)) else emptyList<String>()))
+                .put("tz", ZoneId.systemDefault().id).put("max_run_minutes", d.optInt("max_run_minutes", 60))
+                .put("persona", d.optString("persona").take(400))
         }
 
         add(ui.primary(if (editing) tr("保存", "Save") else tr("保存並運行", "Save and run")) {
             val t = build() ?: return@primary
-            saveTask(t) { if (!editing) withRunPerms { RunService.start(this, RunService.ACTION_RUN_NOW, t.optString("id")); toast(tr("已開始", "Started")) } }
+            saveTask(t, if (editing) configBack else Screen.HOME) { if (!editing) runTask(t.optString("id")) }
         }, bottom = 10)
-        if (!editing) add(ui.secondary(tr("只保存", "Save only")) { build()?.let { saveTask(it) } })
+        if (!editing) add(ui.secondary(tr("只保存", "Save only")) { build()?.let { saveTask(it, Screen.HOME) } })
     }
 
     // ---------- save / sync ----------
-    private fun saveTask(t: JSONObject, then: (() -> Unit)? = null) {
-        val list = Prefs.tasks().toMutableList()
-        val i = list.indexOfFirst { it.optString("id") == t.optString("id") }
-        if (i >= 0) list[i] = t else list.add(t)
-        pushTasks(list, tr("已保存", "Saved"), then)
+    /** One task per platform: the saved task replaces any other task of the same platform. */
+    private fun saveTask(t: JSONObject, then: Screen, after: (() -> Unit)? = null) {
+        val list = Prefs.tasks().filter { platformOf(it) != platformOf(t) && it.optString("id") != t.optString("id") } + t
+        pushTasks(list, tr("已保存", "Saved"), then, after)
     }
 
-    private fun pushTasks(list: List<JSONObject>, msg: String, then: (() -> Unit)? = null) {
+    private fun pushTasks(list: List<JSONObject>, msg: String, then: Screen, after: (() -> Unit)? = null) {
         lifecycleScope.launch {
             try {
-                val arr = JSONArray(); list.forEach { arr.put(JSONObject(it.toString()).apply { remove("_editing"); remove("_level") }) }
+                val arr = JSONArray()
+                list.forEach { arr.put(JSONObject(it.toString()).apply { keys().asSequence().toList().filter { k -> k.startsWith("_") }.forEach { k -> remove(k) } }) }
                 val saved = Api.saveTasks(arr).optJSONArray("tasks") ?: arr
                 Prefs.tasksJson = saved.toString()
-                RunService.start(this@MainActivity) // stand by: daily times + runs started from the desktop app
+                RunService.start(this@MainActivity) // stand by: schedules + runs started from the desktop app
                 draft = null
                 toast(msg)
-                go(Screen.HOME)
-                then?.invoke()
+                go(if (then == Screen.DETAIL && taskFor("tiktok") == null) Screen.HOME else then)
+                after?.invoke()
+            } catch (e: com.noobclaw.mobile.net.ApiException) {
+                toast(if (e.code == "one_task_per_platform") tr("每個平台只能建 1 個任務", "One task per platform")
+                      else tr("保存失敗：", "Save failed: ") + e.message)
             } catch (e: Exception) { toast(tr("保存失敗：", "Save failed: ") + e.message) }
         }
     }
@@ -792,15 +1326,17 @@ class MainActivity : AppCompatActivity() {
     // ---------- logs ----------
     private fun renderLogs() {
         topBar(tr("運行記錄", "Run log")) { go(Screen.ME) }
-        val lines = RunLog.recent().takeLast(200).reversed()
+        val lines = RunLog.recent().takeLast(200).reversed().mapNotNull { l ->
+            if (l.level == "step") Steps.text(l.msg)?.let { l to it } else l to l.msg
+        }
         if (lines.isEmpty()) { add(ui.sub(tr("暫無記錄", "Nothing yet"))); return }
         val card = ui.card()
         val fmt = java.text.SimpleDateFormat("MM-dd HH:mm:ss", java.util.Locale.US)
-        lines.forEach { l ->
-            val color = when (l.level) { "error" -> C.DANGER; "warn" -> C.WARN; else -> C.TEXT }
+        lines.forEach { (l, msg) ->
+            val color = when (l.level) { "error" -> C.DANGER; "warn" -> C.WARN; "step" -> C.ACCENT; else -> C.TEXT }
             val r = ui.row().apply { gravity = Gravity.TOP }
             r.addView(ui.text(fmt.format(java.util.Date(l.ts)), 11f, C.SUB).apply { setPadding(0, ui.dp(1), ui.dp(10), 0) })
-            r.addView(ui.text(l.msg, 13f, color), ui.weight())
+            r.addView(ui.text(msg, 13f, color), ui.weight())
             card.addView(r, ui.lp(bottom = 8))
         }
         add(card, bottom = 14)

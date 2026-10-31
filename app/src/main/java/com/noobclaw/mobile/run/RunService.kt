@@ -136,6 +136,7 @@ class RunService : Service() {
                 .put("a11y", NcAccessibilityService.isRunning)
                 .put("running", currentRun?.isActive == true)
                 .put("cooldown_until", Prefs.cooldownUntil)
+                .put("progress", if (currentRun?.isActive == true) liveProgress() ?: JSONObject.NULL else JSONObject.NULL)
         )
         // 會員可用手機數:超出的手機不跑任務(服務器也不下發劇本)。
         Prefs.overLimit = r.optBoolean("over_limit", false)
@@ -169,15 +170,19 @@ class RunService : Service() {
     private suspend fun refreshTaskAndMaybeRun(fetch: Boolean = true) {
         if (Prefs.token.isEmpty()) return
         // Offline: keep using the last list we got, so a network blip does not skip a slot.
+        if (fetch) Api.refreshCompliance()
         if (fetch) runCatching { Api.fetchTasks().optJSONArray("tasks") }.onSuccess { if (it != null) Prefs.tasksJson = it.toString() }
             .onFailure { RunLog.w(tr("拉取任務失敗，用本地緩存：", "Couldn't fetch tasks, using the local copy: ") + it.message) }
         if (currentRun?.isActive == true) return
         if (Prefs.overLimit) return // 超出會員可用手機數:不排程
         // One run at a time: the first due task runs now, the next one on a later heartbeat (catch-up window 2 h).
         for (task in Prefs.tasks()) {
-            val due = Schedule.due(task, ZonedDateTime.now(), doneSlots(), "#" + task.optString("id")) ?: continue
+            val id = task.optString("id")
+            val due = Schedule.due(task, ZonedDateTime.now(), doneSlots(), "#$id", Prefs.lastStart(id)) ?: continue
             val key = due.slotKey
-            markSlotDone(key) // mark first: a crash mid-run never re-runs the same slot
+            // mark first: a crash mid-run never re-runs the same slot / interval
+            if (Schedule.kind(task) is Schedule.Kind.Daily) markSlotDone(key)
+            Prefs.setLastStart(id, System.currentTimeMillis())
             startRun(key, dryRun = false, taskId = task.optString("id"))
             return
         }
@@ -206,7 +211,10 @@ class RunService : Service() {
             val task = (if (taskId == null) Prefs.tasks().firstOrNull() else Prefs.tasks().firstOrNull { it.optString("id") == taskId })
                 ?: run { report.put("status", "skipped").put("reason", "no_task"); RunLog.w(tr("跳過運行：沒有任務", "Skipped: no task"), runId); return }
             runningTaskId = task.optString("id")
+            runningRunId = runId
+            runStartedAt = started
             report.put("task_id", runningTaskId)
+            if (!dryRun) Prefs.setLastStart(task.optString("id"), started) // "every N hours" counts from the last start
             val binding = runCatching { JSONObject(Prefs.bindingJson) }.getOrElse { JSONObject() } // filled by the script (setAccount)
             report.put("late_sec", Schedule.lateSeconds(task, slotKey, ZonedDateTime.now()))
             val (pkg, ver) = targetAppInfo() ?: run { report.put("status", "skipped").put("reason", "app_not_installed"); return }
@@ -217,6 +225,7 @@ class RunService : Service() {
             overlay = FloatingStop(this) { startService(Intent(this, RunService::class.java).setAction(ACTION_STOP_RUN)) }.also { it.show() }
             val e = ScriptEngine(applicationContext, pack, task.put("target_package", pkg), binding, dryRun, runId)
             engine = e
+            liveEngine = e
             val result = e.run()
             report.put("status", result.optString("status", "done")).put("result", result)
             // The run row has its own reason column: fill it from the script result (time, caps_reached, profile_tab_not_found …).
@@ -232,13 +241,32 @@ class RunService : Service() {
             report.put("status", "error").put("reason", (e.message ?: e.javaClass.simpleName).take(200))
             RunLog.e(tr("運行出錯：", "Run error: ") + e.message, runId)
         } finally {
+            // Fill the result also for stopped / failed runs, so per-task totals and credits stay right.
+            val res = report.optJSONObject("result") ?: JSONObject()
+            val live = engine?.progress()
+            if (live != null) {
+                if (!res.has("counts")) res.put("counts", live.optJSONObject("counts"))
+                if (!res.has("targets")) res.put("targets", live.optJSONObject("targets"))
+                if (!res.has("credits")) res.put("credits", live.optLong("credits"))
+            }
+            report.optString("task_id").takeIf { it.isNotEmpty() }?.let { res.put("task_id", it) } // the server groups runs by result.task_id
+            if (res.length() > 0) report.put("result", res)
             engine = null
+            liveEngine = null
             runningTaskId = null
+            runningRunId = null
             overlay?.hide(); overlay = null
             report.put("duration_ms", System.currentTimeMillis() - started)
             // NonCancellable: the report still goes out when the run was cancelled or the service is stopping.
             kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
                 runCatching { Api.reportRun(report) }
+                if (report.optString("task_id").isNotEmpty() && report.optString("status") != "skipped") runCatching {
+                    Prefs.recordRun(JSONObject().put("run_id", runId).put("task_id", report.optString("task_id"))
+                        .put("status", report.optString("status")).put("reason", report.optString("reason"))
+                        .put("dry_run", dryRun).put("counts", res.optJSONObject("counts") ?: JSONObject())
+                        .put("credits", res.optLong("credits")).put("started_at", started)
+                        .put("duration_ms", report.optLong("duration_ms")))
+                }
                 runCatching { uploadLogs() } // also when automation is off (manual / dry runs)
             }
             if (autostart()) startInForeground(getString(R.string.app_name) + " · " + tr("待命中", "Standing by"))
@@ -340,6 +368,16 @@ class RunService : Service() {
 
         /** Id of the task running right now (null when idle); the UI reads it to show "運行中". */
         @Volatile var runningTaskId: String? = null
+        @Volatile var runningRunId: String? = null
+        @Volatile var runStartedAt: Long = 0L
+        @Volatile private var liveEngine: ScriptEngine? = null
+
+        /** Live progress of the current run: {run_id, task_id, counts, targets, credits, started_at}; null when idle. */
+        fun liveProgress(): JSONObject? {
+            val run = runningRunId ?: return null
+            val p = liveEngine?.progress() ?: JSONObject().put("counts", JSONObject()).put("targets", JSONObject()).put("credits", 0)
+            return p.put("run_id", run).put("task_id", runningTaskId ?: "").put("started_at", runStartedAt)
+        }
 
         fun start(ctx: Context, action: String? = null, taskId: String? = null) {
             val i = Intent(ctx, RunService::class.java)

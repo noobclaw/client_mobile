@@ -32,4 +32,32 @@ class ScheduleTest {
     @Test fun atMostTwoSlotsPerDay() {
         assertEquals(2, Schedule.slots(task("08:00", "12:00", "20:00")).size)
     }
+
+    private fun sched(kind: JSONObject, tz: String = "America/Los_Angeles") = JSONObject().put("id", "t1").put("tz", tz).put("schedule", kind)
+
+    @Test fun everyDueWhenNeverRanOrIntervalPassed() {
+        val now = ZonedDateTime.of(2026, 10, 31, 14, 5, 0, 0, la)
+        val t = sched(JSONObject().put("kind", "every").put("hours", 3))
+        assertEquals("2026-10-31@14:05#t1", Schedule.due(t, now, emptySet(), "#t1", null)?.slotKey)
+        val ms = now.toInstant().toEpochMilli()
+        assertNull(Schedule.due(t, now, emptySet(), "#t1", ms - 2 * 3_600_000))
+        assertEquals("2026-10-31@14:05#t1", Schedule.due(t, now, emptySet(), "#t1", ms - 3 * 3_600_000)?.slotKey)
+        val half = sched(JSONObject().put("kind", "every").put("hours", 0.5))
+        assertNull(Schedule.due(half, now, emptySet(), "#t1", ms - 29 * 60_000))
+        assertEquals(Schedule.Kind.Every(0.5), Schedule.kind(half))
+    }
+
+    @Test fun dailyAndManualKinds() {
+        val t = sched(JSONObject().put("kind", "daily").put("at", "09:30"))
+        assertEquals("2026-10-30@09:30#t1", Schedule.due(t, ZonedDateTime.of(2026, 10, 30, 9, 45, 0, 0, la), emptySet(), "#t1")?.slotKey)
+        assertNull(Schedule.due(t, ZonedDateTime.of(2026, 10, 30, 9, 45, 0, 0, la), setOf("2026-10-30@09:30#t1"), "#t1"))
+        val m = sched(JSONObject().put("kind", "manual"))
+        assertNull(Schedule.due(m, ZonedDateTime.of(2026, 10, 30, 9, 45, 0, 0, la), emptySet(), "#t1", null))
+        assertNull(Schedule.nextRunAt(m, null, emptySet()))
+    }
+
+    @Test fun legacyTasksMapLikeTheServer() {
+        assertEquals(Schedule.Kind.Daily(java.time.LocalTime.of(9, 30)), Schedule.kind(task("09:30", "20:00")))
+        assertEquals(Schedule.Kind.Manual, Schedule.kind(task("09:30", enabled = false)))
+    }
 }

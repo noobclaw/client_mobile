@@ -106,7 +106,54 @@ object Prefs {
         get() = sp.getInt(K_PHONE_LIMIT, 0)
         set(v) = sp.edit().putInt(K_PHONE_LIMIT, v).apply()
 
+    // ---------- 2026-10-31 雲手機改版 ----------
+    private const val K_HIDDEN = "hidden_platforms"
+    private const val K_STATS = "task_stats_json"
+    private const val K_RUNS = "run_history_json"
+    private const val K_LAST_START = "ls_"
+
+    /** Platforms the backend compliance config hides for this user (GET /api/matrix/config → complianceHiddenPlatforms). */
+    var hiddenPlatforms: Set<String>
+        get() = runCatching {
+            val a = org.json.JSONArray(sp.getString(K_HIDDEN, "[]") ?: "[]"); (0 until a.length()).map { a.optString(it) }.toSet()
+        }.getOrDefault(emptySet())
+        set(v) = sp.edit().putString(K_HIDDEN, org.json.JSONArray(v.toList()).toString()).apply()
+
+    /** When the task last started (epoch ms), for the "every N hours" schedule; null = never on this install. */
+    fun lastStart(taskId: String): Long? = sp.getLong(K_LAST_START + taskId, 0L).takeIf { it > 0 }
+    fun setLastStart(taskId: String, ms: Long) = sp.edit().putLong(K_LAST_START + taskId, ms).apply()
+
+    /** Per-task totals kept from the run reports this phone sent: {taskId: {runs, totals{}, credits, last_*}}. */
+    fun taskStats(taskId: String): org.json.JSONObject? =
+        runCatching { org.json.JSONObject(sp.getString(K_STATS, "{}") ?: "{}").optJSONObject(taskId) }.getOrNull()
+
+    /** Recent run reports (newest first, at most 30): {run_id, task_id, status, reason, dry_run, counts, credits, started_at, duration_ms}. */
+    fun runHistory(): List<org.json.JSONObject> = runCatching {
+        val a = org.json.JSONArray(sp.getString(K_RUNS, "[]") ?: "[]"); (0 until a.length()).mapNotNull { a.optJSONObject(it) }
+    }.getOrDefault(emptyList())
+
+    /** Records a finished run (called when its report is sent). Dry runs are listed but not added to the totals. */
+    @Synchronized fun recordRun(run: org.json.JSONObject) {
+        val list = listOf(run) + runHistory().filter { it.optString("run_id") != run.optString("run_id") }
+        sp.edit().putString(K_RUNS, org.json.JSONArray(list.take(30)).toString()).apply()
+        val tid = run.optString("task_id")
+        if (tid.isEmpty() || run.optBoolean("dry_run")) return
+        val all = runCatching { org.json.JSONObject(sp.getString(K_STATS, "{}") ?: "{}") }.getOrElse { org.json.JSONObject() }
+        val st = all.optJSONObject(tid) ?: org.json.JSONObject()
+        val totals = st.optJSONObject("totals") ?: org.json.JSONObject()
+        val counts = run.optJSONObject("counts") ?: org.json.JSONObject()
+        counts.keys().forEach { k -> totals.put(k, totals.optLong(k) + counts.optLong(k)) }
+        st.put("totals", totals).put("runs", st.optInt("runs") + 1)
+            .put("credits", st.optLong("credits") + run.optLong("credits"))
+            .put("last_run_at", run.optLong("started_at") + run.optLong("duration_ms"))
+            .put("last_started_at", run.optLong("started_at"))
+            .put("last_status", run.optString("status")).put("last_reason", run.optString("reason"))
+            .put("last_counts", counts).put("last_credits", run.optLong("credits")).put("last_run_id", run.optString("run_id"))
+        all.put(tid, st)
+        sp.edit().putString(K_STATS, all.toString()).apply()
+    }
+
     fun logout() {
-        sp.edit().remove(K_TOKEN).remove(K_WALLET).remove(K_TASK).remove(K_TASKS).remove(K_BINDING).remove(K_OVER).remove(K_PHONE_LIMIT).remove(K_ACCOUNT).apply()
+        sp.edit().remove(K_TOKEN).remove(K_WALLET).remove(K_TASK).remove(K_TASKS).remove(K_BINDING).remove(K_OVER).remove(K_PHONE_LIMIT).remove(K_ACCOUNT).remove(K_STATS).remove(K_RUNS).apply()
     }
 }

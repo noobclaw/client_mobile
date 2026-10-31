@@ -120,6 +120,43 @@ class Ui(private val ctx: Context) {
         if (multi) { minLines = 3; isSingleLine = false; gravity = Gravity.TOP or Gravity.START }
     }
 
+    // ---------- cloud-phone card pieces (2026-10-31) ----------
+    fun mono(t: CharSequence, size: Float = 12f, color: Int = C.TEXT, bold: Boolean = false) = text(t, size, color, bold).apply {
+        typeface = Typeface.create(Typeface.MONOSPACE, if (bold) Typeface.BOLD else Typeface.NORMAL)
+    }
+
+    /** Inner panel of the phone card (darker, rounded, thin border). */
+    fun panel(stroke: Int = C.BORDER, fill: Int = C.SURFACE2) = col().apply { background = shape(fill, 14, stroke) }
+
+    fun alpha(c: Int, a: Int) = Color.argb(a, Color.red(c), Color.green(c), Color.blue(c))
+
+    /** Filled pill (e.g. 運行中 on green). */
+    fun pillSolid(t: String, fill: Int, fg: Int) = text(t, 12f, fg, true).apply {
+        setPadding(dp(10), dp(4), dp(10), dp(4)); background = shape(fill, 20)
+    }
+
+    /** Compact button used inside the phone card (刪除 / 查看 / ▶ 運行 / 停止). */
+    fun small(t: String, color: Int = C.TEXT, fill: Int = C.SURFACE, stroke: Int? = C.BORDER, enabled: Boolean = true, onClick: () -> Unit) =
+        text(t, 14f, color, true).apply {
+            gravity = Gravity.CENTER; setPadding(dp(10), dp(10), dp(10), dp(10))
+            pressable(this, fill, 10, stroke)
+            isEnabled = enabled; alpha = if (enabled) 1f else 0.4f
+            if (enabled) setOnClickListener { onClick() }
+        }
+
+    fun divider(color: Int = C.BORDER) = View(ctx).apply {
+        setBackgroundColor(color); layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 1)
+    }
+
+    /** Label on the left, value on the right (one line, value ellipsized). */
+    fun kv(label: String, value: String, valueColor: Int = C.TEXT) = row().apply {
+        setPadding(0, dp(3), 0, dp(3))
+        addView(text(label, 13f, C.SUB).apply { setPadding(0, 0, dp(12), 0) })
+        addView(text(value, 13f, valueColor).apply {
+            gravity = Gravity.END; maxLines = 2; ellipsize = android.text.TextUtils.TruncateAt.END
+        }, weight())
+    }
+
     fun spacer(h: Int) = View(ctx).apply { layoutParams = LinearLayout.LayoutParams(1, dp(h)) }
     fun weight() = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
 }

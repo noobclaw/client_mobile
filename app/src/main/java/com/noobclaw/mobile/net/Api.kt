@@ -106,6 +106,18 @@ object Api {
         post("/api/mobile/leads/mark", JSONObject().put("platform", "tiktok").put("platform_uid", platformUid)
             .put("handle", handle).put("status", status).put("action", action).put("note", note))
 
+    /**
+     * Backend compliance switch (same auth as /api/matrix): platforms to hide for this user, cached in Prefs.
+     * On failure the last cached value stays (default: hide nothing).
+     */
+    suspend fun refreshCompliance() {
+        if (Prefs.token.isEmpty()) return
+        runCatching { get("/api/matrix/config") }.onSuccess { r ->
+            val a = r.optJSONArray("complianceHiddenPlatforms") ?: return@onSuccess
+            Prefs.hiddenPlatforms = (0 until a.length()).map { a.optString(it).trim().lowercase() }.filter { it.isNotEmpty() }.toSet()
+        }
+    }
+
     // ---- shared with desktop ----
     suspend fun chargeAction(action: String, platform: String, ref: String, idempotencyKey: String, scriptVersion: String): JSONObject =
         post(
@@ -115,8 +127,11 @@ object Api {
                 .put("device_id", Prefs.deviceId).put("script_version", scriptVersion)
         )
 
+    /** Reply text + the credits the server billed for it (`_noobclaw.billableTokens`, 0 when absent). */
+    data class ChatResult(val text: String, val billable: Long)
+
     /** OpenAI-compatible chat call, same model id the desktop uses for comments. */
-    suspend fun chat(system: String, user: String, maxTokens: Int = 800): String {
+    suspend fun chat(system: String, user: String, maxTokens: Int = 800): ChatResult {
         val body = JSONObject()
             .put("model", "noobclawai-chat")
             .put("stream", false)
@@ -126,7 +141,9 @@ object Api {
                 .put(JSONObject().put("role", "system").put("content", system))
                 .put(JSONObject().put("role", "user").put("content", user)))
         val r = post("/api/ai/chat/completions", body)
-        return r.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")?.optString("content").orEmpty().trim()
+        val text = r.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")?.optString("content").orEmpty().trim()
+        val billable = r.optJSONObject("_noobclaw")?.optLong("billableTokens", 0L) ?: 0L
+        return ChatResult(text, billable.coerceAtLeast(0L))
     }
 
     private fun enc(s: String) = java.net.URLEncoder.encode(s, "UTF-8")
