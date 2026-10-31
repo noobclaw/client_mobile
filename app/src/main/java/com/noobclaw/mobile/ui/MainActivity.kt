@@ -288,12 +288,12 @@ class MainActivity : AppCompatActivity() {
     // ---------- login ----------
     private fun renderLogin() {
         val top = ui.row()
-        top.addView(View(this), ui.weight())
+        top.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
         top.addView(ui.link("🌐 " + I18n.lang.label, C.SUB) { chooseLanguage() })
         add(top)
-        add(ui.spacer(24))
+        root.addView(ui.spacer(24))   // keep the spacer's own fixed height (add() would make it WRAP_CONTENT = fill)
         add(ui.text("NoobClaw", 34f, C.ACCENT, true))
-        add(ui.spacer(28))
+        root.addView(ui.spacer(28))
         val card = ui.card()
         val acc = ui.input(tr("用戶名或郵箱", "Username or email"))
         val pw = ui.input(tr("密碼", "Password"), password = true)
