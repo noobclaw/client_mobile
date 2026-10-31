@@ -568,7 +568,7 @@ class MainActivity : AppCompatActivity() {
             background = if (running) ui.shape(C.SURFACE, 22, ui.alpha(C.ACCENT, 200), 2) else ui.shape(C.SURFACE, 22, C.BORDER)
         }
         // 設備ID chip
-        card.addView(ui.mono(tr("設備ID: ", "Device ID: ") + Prefs.deviceId, 11f, C.TEXT, true).apply {
+        card.addView(ui.mono(tr("設備ID: ", "Device ID: ") + shortId(Prefs.deviceId), 11f, C.TEXT, true).apply {
             setPadding(ui.dp(8), ui.dp(3), ui.dp(8), ui.dp(3)); background = ui.shape(ui.alpha(C.TEXT, 14), 7, C.BORDER)
             maxLines = 1; ellipsize = TextUtils.TruncateAt.END
         }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = ui.dp(10) })
@@ -631,6 +631,9 @@ class MainActivity : AppCompatActivity() {
         return bar
     }
 
+    /** Short device id for display: the first block of the id (e.g. "c520ac72"), same as the desktop card. */
+    private fun shortId(id: String): String = id.substringBefore('-').let { if (it.length >= 6) it else id.take(12) }
+
     private fun emptyBox(title: String, sub: String, warn: Boolean, btn: View? = null): View {
         val b = ui.col().apply { gravity = Gravity.CENTER_HORIZONTAL; setPadding(ui.dp(8), ui.dp(18), ui.dp(8), ui.dp(14)) }
         b.addView(ui.text(title, 15f, if (warn) C.WARN else C.TEXT, true).apply { gravity = Gravity.CENTER }, ui.lp(bottom = 6))
@@ -663,7 +666,7 @@ class MainActivity : AppCompatActivity() {
         }
         val acct = accountRow()
         if (acct != null) {
-            body.addView(acct, ui.lp(bottom = 8)); body.addView(ui.divider(), ui.lp(bottom = 10))
+            body.addView(acct, ui.lp(bottom = 8)); body.addView(ui.divider(), ui.lp(h = 1, bottom = 10))
         } else {
             val w = ui.col().apply { setPadding(ui.dp(10), ui.dp(8), ui.dp(10), ui.dp(8)); background = ui.shape(ui.alpha(C.WARN, 14), 10, ui.alpha(C.WARN, 80)) }
             w.addView(ui.text(tr("未檢測到 TikTok 帳號", "No TikTok account detected yet"), 13f, C.WARN, true))
@@ -764,7 +767,7 @@ class MainActivity : AppCompatActivity() {
         body.addView(ui.kv(tr("定時", "Schedule"), scheduleText(t)))
         body.addView(ui.kv(tr("最近運行", "Last run"), lastRunText(t)))
         body.addView(ui.kv(tr("下次運行", "Next run"), nextRunText(t)))
-        body.addView(ui.divider(), ui.lp(top = 6, bottom = 6))
+        body.addView(ui.divider(), ui.lp(h = 1, top = 6, bottom = 6))
         body.addView(ui.text(tr("累計完成", "Total done"), 12f, C.SUB))
         body.addView(ui.text(countsText(sid, Prefs.taskStats(t.optString("id"))?.optJSONObject("totals")), 13f, C.TEXT), ui.lp(bottom = 12))
 
@@ -854,7 +857,7 @@ class MainActivity : AppCompatActivity() {
         head.addView(progressBox(sid, false))
         p.addView(head, ui.lp().apply { setMargins(ui.dp(8), ui.dp(8), ui.dp(8), 0) })
         val body = ui.col().apply { setPadding(ui.dp(12), ui.dp(10), ui.dp(12), ui.dp(12)) }
-        accountRow()?.let { body.addView(it, ui.lp(bottom = 8)); body.addView(ui.divider(), ui.lp(bottom = 8)) }
+        accountRow()?.let { body.addView(it, ui.lp(bottom = 8)); body.addView(ui.divider(), ui.lp(h = 1, bottom = 8)) }
         body.addView(stepList(RunService.runningRunId, 6, true), ui.lp(bottom = 12))
         val r = ui.row().apply { gravity = Gravity.CENTER }
         r.addView(ui.small(tr("■ 停止", "■ Stop"), Color.WHITE, C.DANGER, null) { RunService.start(this, RunService.ACTION_STOP_RUN) }
@@ -888,7 +891,7 @@ class MainActivity : AppCompatActivity() {
         tr0.addView(ui.badge("TT", Color.BLACK, Color.WHITE, 36).apply { background = ui.shape(Color.BLACK, 18, C.CYAN, 2) })
         val tt = ui.col().apply { setPadding(ui.dp(10), 0, 0, 0) }
         tt.addView(ui.text(taskName(t), 17f, C.TEXT, true))
-        tt.addView(ui.mono(tr("設備ID ", "Device ") + Prefs.deviceId, 11f, C.SUB).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END })
+        tt.addView(ui.mono(tr("設備ID ", "Device ") + shortId(Prefs.deviceId), 11f, C.SUB).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END })
         tr0.addView(tt, ui.weight())
         head.addView(tr0, ui.lp(bottom = 12))
         val b = binding()
