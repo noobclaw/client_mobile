@@ -1047,8 +1047,7 @@ class MainActivity : AppCompatActivity() {
         item(tr("權限", "Permissions"), if (missing.isEmpty()) tr("已開啟", "All on") else tr("缺 ${missing.size} 項", "${missing.size} missing"),
             if (missing.isEmpty()) C.ACCENT else C.WARN) { go(Screen.PERMS) }
         item(tr("語言", "Language"), I18n.lang.label) { chooseLanguage() }
-        item(tr("運行記錄", "Run log"), "") { go(Screen.LOGS) }
-        item(tr("聯繫客服", "Contact support"), "") { sendDiagnostics() }
+        // 「運行記錄」「聯繫客服」兩行去掉(2026-11-01 用戶要求;運行明細在電腦端看)
         item(tr("版本", "Version"), "v${BuildConfig.VERSION_NAME}（${BuildConfig.VERSION_CODE}）", divider = false, onClick = null)
         add(list, bottom = 18)
 
