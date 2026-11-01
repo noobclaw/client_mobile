@@ -79,7 +79,7 @@ object FloatBall {
         app = c
         if (bar != null || !Settings.canDrawOverlays(c) || Prefs.token.isEmpty()) return@post   // 沒登錄不顯示
         wm = c.getSystemService(WindowManager::class.java)
-        right = prefs()?.getBoolean("fb2_right", false) ?: false   // 默認左上角(右側會蓋住 TikTok 頭像 / 點讚列)
+        right = prefs()?.getBoolean("fb3_right", false) ?: false   // 默認左上角(右側會蓋住 TikTok 頭像 / 點讚列)
         buildBar()
         main.post(ticker)
     }
@@ -147,7 +147,7 @@ object FloatBall {
         ).apply {
             gravity = Gravity.TOP or (if (right) Gravity.END else Gravity.START)
             x = EDGE()
-            y = (prefs()?.getInt("fb2_y", -1) ?: -1).takeIf { it >= 0 } ?: (screenH * 0.14).toInt()
+            y = (prefs()?.getInt("fb3_y", -1) ?: -1).takeIf { it >= 0 } ?: (screenH * 0.24).toInt()
         }
         barLp = lp
         attachDrag(box)
@@ -205,7 +205,7 @@ object FloatBall {
                         lp.x = EDGE()
                         arrangeRow()
                         runCatching { wm?.updateViewLayout(bar, lp) }
-                        prefs()?.edit()?.putBoolean("fb2_right", right)?.putInt("fb2_y", lp.y)?.apply()
+                        prefs()?.edit()?.putBoolean("fb3_right", right)?.putInt("fb3_y", lp.y)?.apply()
                     } else if (e.actionMasked == MotionEvent.ACTION_UP) openMenu()
                     true
                 }
