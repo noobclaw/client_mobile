@@ -48,9 +48,11 @@ data class RunCaps(val maxLikes: Int, val maxComments: Int, val maxFollows: Int,
         const val CEIL_FOLLOWS = 100
         const val HARD_RUN_MS = 10L * 60 * 60 * 1000
 
+        // 「不限」(config.cl_*_nolimit)= 真的不限,不再用 1000 / 300 封頂(2026-11-01)
+        private fun nolimit(task: JSONObject, k: String) = task.optJSONObject("config")?.optBoolean(k, false) == true
         fun fromTask(task: JSONObject) = RunCaps(
-            maxLikes = task.optInt("max_likes", 300).coerceIn(0, CEIL_LIKES),
-            maxComments = task.optInt("max_comments", 30).coerceIn(0, CEIL_COMMENTS),
+            maxLikes = if (nolimit(task, "cl_like_nolimit")) Int.MAX_VALUE / 2 else task.optInt("max_likes", 300).coerceIn(0, CEIL_LIKES),
+            maxComments = if (nolimit(task, "cl_reply_nolimit")) Int.MAX_VALUE / 2 else task.optInt("max_comments", 30).coerceIn(0, CEIL_COMMENTS),
             maxFollows = task.optInt("max_follows", 0).coerceIn(0, CEIL_FOLLOWS),
             maxRunMs = (task.optLong("max_run_minutes", 60) * 60_000).coerceIn(60_000, HARD_RUN_MS),
         )

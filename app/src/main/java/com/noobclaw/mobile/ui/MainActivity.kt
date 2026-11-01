@@ -1332,8 +1332,8 @@ class MainActivity : AppCompatActivity() {
             }
             drawActs()
             add(actBox)
-            add(ui.sub(tr("最多留空 = 有多少做多少(每次最多點讚 1000、評論 300);間隔 = 做完一個等幾秒再做下一個",
-                "Empty max = no limit (per run at most 1000 likes / 300 replies). Gap = seconds between actions")), bottom = 20)
+            add(ui.sub(tr("最多留空 = 不限,有多少做多少;間隔 = 做完一個等幾秒再做下一個",
+                "Empty max = no limit. Gap = seconds between actions")), bottom = 20)
 
             if (d.optBoolean("_doReply")) {
                 add(ui.section(tr("評論內容", "Reply content")), bottom = 8)
