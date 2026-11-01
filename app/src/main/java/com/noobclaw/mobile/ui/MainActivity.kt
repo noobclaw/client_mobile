@@ -249,7 +249,7 @@ class MainActivity : AppCompatActivity() {
         lastSig = signature()
         when {
             Prefs.token.isEmpty() -> renderLogin()
-            !inApp -> renderConsent()
+            !inApp -> { Prefs.consentVersion = RunService.CONSENT_VERSION; render(); return }   // 「使用說明」頁不再顯示(2026-11-01),登錄後直接進
             else -> when (screen) {
                 Screen.HOME -> renderHome()
                 Screen.ME -> renderMe()
@@ -683,14 +683,25 @@ class MainActivity : AppCompatActivity() {
         val acct = accountRow()
         if (acct != null) {
             body.addView(acct, ui.lp(bottom = 8)); body.addView(ui.divider(), ui.lp(h = 1, bottom = 10))
-        } else {
-            val w = ui.col().apply { setPadding(ui.dp(10), ui.dp(8), ui.dp(10), ui.dp(8)); background = ui.shape(ui.alpha(C.WARN, 14), 10, ui.alpha(C.WARN, 80)) }
-            w.addView(ui.text(tr("未檢測到 TikTok 帳號", "No TikTok account detected yet"), 13f, C.WARN, true))
-            w.addView(ui.text(tr("請在這臺手機上打開 TikTok 並登錄。第一次運行時會自動識別帳號。",
-                "Open TikTok on this phone and log in. The first run detects the account by itself."), 12f, C.SUB))
-            body.addView(w, ui.lp(bottom = 10))
         }
         val t = taskFor("tiktok")
+        if (acct == null && t == null) {
+            // 和電腦端一致:沒識別到平台帳號不能建任務。點「檢測帳號」打開 TikTok 讀一下帳號(不點讚不評論)
+            val detecting = RunService.runningTaskId == "detect"
+            val btn = ui.small(if (detecting) tr("正在檢測…", "Detecting…") else tr("檢測帳號", "Detect account"),
+                C.ON_ACCENT, C.ACCENT, null, !detecting) {
+                withRunPerms { RunService.start(this, RunService.ACTION_DETECT_ACCOUNT); toast(tr("正在打開 TikTok 檢測帳號…", "Opening TikTok to detect the account…")) }
+            }.apply { setPadding(ui.dp(18), ui.dp(9), ui.dp(18), ui.dp(9)) }
+            body.addView(emptyBox(tr("未檢測到 TikTok 帳號", "No TikTok account detected"),
+                tr("請在這臺手機上打開 TikTok 並登錄帳號，再點「檢測帳號」，識別到後就能創建任務", "Log in to TikTok on this phone, then tap Detect account — you can create a task once it's found"), true, btn))
+            return p
+        }
+        if (acct == null) {
+            val w = ui.col().apply { setPadding(ui.dp(10), ui.dp(8), ui.dp(10), ui.dp(8)); background = ui.shape(ui.alpha(C.WARN, 14), 10, ui.alpha(C.WARN, 80)) }
+            w.addView(ui.text(tr("未檢測到 TikTok 帳號", "No TikTok account detected yet"), 13f, C.WARN, true))
+            w.addView(ui.text(tr("運行時會自動識別帳號", "The next run detects the account"), 12f, C.SUB))
+            body.addView(w, ui.lp(bottom = 10))
+        }
         if (t == null) {
             body.addView(emptyBox(tr("TikTok 還沒有任務", "No TikTok task yet"), tr("每個平台可以建 1 個任務", "One task per platform"), false, createBtn(true)))
             return p
@@ -1228,6 +1239,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun newTask() {
         if (taskFor(currentTab()) != null) { toast(tr("每個平台只能建 1 個任務", "One task per platform")); return }
+        if (accountRow() == null) { toast(tr("請先檢測 TikTok 帳號", "Detect the TikTok account first")); return }
         draft = JSONObject().put("script_id", CL).put("schedule", Schedule.toJson(Schedule.Kind.Daily(LocalTime.of(9, 30)))) // 新建默認每天定時
         configBack = Screen.HOME
         go(Screen.CONFIG)
@@ -1250,6 +1262,23 @@ class MainActivity : AppCompatActivity() {
         if (!d.has("_kw")) d.put("_kw", keywordsOf(d).joinToString("\n"))
         if (!d.has("_tg")) d.put("_tg", targetsOf(d).joinToString("\n"))
         var kwMode = if (d.has("_kwMode")) d.optBoolean("_kwMode") else (d.optJSONObject("config") == null || isKeywordMode(d))
+
+        // 分步(和電腦端一樣):評論區點讚 = 任務 → 動作 → 評論(開了回覆才有)→ 頻率;定向獲客 = 任務 → 數量 → 頻率
+        val clNow = script == CL
+        val steps = if (!clNow) listOf("task", "lvl", "freq") else if (d.optBoolean("_doReply", false)) listOf("task", "act", "cmt", "freq") else listOf("task", "act", "freq")
+        val stepNow = d.optString("_step").takeIf { it in steps } ?: "task"
+        val stepIdx = steps.indexOf(stepNow)
+        fun stepLabel(k: String) = when (k) { "task" -> tr("任務", "Task"); "act" -> tr("動作", "Actions"); "cmt" -> tr("評論", "Replies"); "lvl" -> tr("數量", "Amount"); else -> tr("頻率", "Schedule") }
+        val ind = ui.row()
+        steps.forEachIndexed { i, k ->
+            val on = i == stepIdx; val done = i < stepIdx
+            ind.addView(ui.text((if (done) "✓ " else "${i + 1} ") + stepLabel(k), 13f, if (on) C.ACCENT else C.SUB, on))
+            if (i < steps.size - 1) ind.addView(View(this).apply { setBackgroundColor(C.BORDER) }, LinearLayout.LayoutParams(0, ui.dp(1), 1f).apply { marginStart = ui.dp(8); marginEnd = ui.dp(8) })
+        }
+        add(ind, bottom = 18)
+        // 下面各段只把「當前這一步」的內容加到頁面上
+        var sec = "task"
+        fun add(v: View, top: Int = 0, bottom: Int = 0) { if (sec == stepNow) root.addView(v, ui.lp(top = top, bottom = bottom)) }
 
         // script
         add(ui.section(tr("劇本", "Script")), bottom = 8)
@@ -1312,6 +1341,7 @@ class MainActivity : AppCompatActivity() {
         }
         var level = d.optString("_level").ifEmpty { levelFromCaps(d) }
         if (cl) {
+            sec = "act"
             add(ui.section(tr("動作", "Actions")), bottom = 8)
             val actBox = ui.col()
             fun drawActs() {
@@ -1336,6 +1366,7 @@ class MainActivity : AppCompatActivity() {
                 "Empty max = no limit. Gap = seconds between actions")), bottom = 20)
 
             if (d.optBoolean("_doReply")) {
+                sec = "cmt"
                 add(ui.section(tr("評論內容", "Reply content")), bottom = 8)
                 val ai = d.optBoolean("_ai")
                 add(switchRow(tr("AI 根據評論自主回覆", "AI writes replies from the comment"), ai) { d.put("_ai", !ai); render() }, bottom = 12)
@@ -1357,6 +1388,7 @@ class MainActivity : AppCompatActivity() {
                 } else add(ui.sub(tr("關掉 AI 時,每條回覆就是一句引流語(需要至少填一句)", "With AI off every reply is a funnel line (add at least one)")), bottom = 20)
             }
         } else {
+            sec = "lvl"
             // amount
             add(ui.section(tr("數量", "Amount")), bottom = 8)
             val amount = ui.sub("")
@@ -1377,6 +1409,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         // schedule
+        sec = "freq"
         add(ui.section(tr("定時", "Schedule")), bottom = 8)
         var kind = Schedule.kind(d)
         val schedBox = ui.col()
@@ -1496,16 +1529,41 @@ class MainActivity : AppCompatActivity() {
                 .put("persona", "")
         }
 
-        add(ui.primary(if (editing) tr("保存", "Save") else tr("保存並運行", "Save and run")) {
-            val t = build() ?: return@primary
-            saveTask(t, if (editing) configBack else Screen.HOME) { if (!editing) runTask(t.optString("id")) }
-        }, bottom = 10)
-        if (!editing) add(ui.secondary(tr("只保存", "Save only")) {
-            val t = build() ?: return@secondary
-            // Saved without running: "every N hours" waits a full interval instead of starting right away.
-            if (Schedule.kind(t) is Schedule.Kind.Every) Prefs.setLastStart(t.optString("id"), System.currentTimeMillis())
-            saveTask(t, Screen.HOME)
-        })
+        // 底部按鈕:不是最後一步 = 上一步 / 下一步;最後一步 = 保存(新建還有「只保存」)
+        fun goStep(k: String) { d.put("_step", k); render(); scroll.scrollTo(0, 0) }
+        fun checkStep(k: String): String? = when (k) {
+            "task" -> if (kwMode && lines(d.optString("_kw")).isEmpty()) tr("請填至少 1 個關鍵詞", "Add at least one keyword")
+                else if (!kwMode && lines(d.optString("_tg")).isEmpty()) (if (cl) tr("請填 TikTok 作品鏈接", "Add a TikTok video link") else tr("請填至少 1 個同行帳號", "Add at least one competitor account"))
+                else null
+            "act" -> if (!d.optBoolean("_doLike") && !d.optBoolean("_doReply")) tr("請至少開啟一個動作", "Turn on at least one action") else null
+            "cmt" -> if (!d.optBoolean("_ai") && lines(d.optString("_funnel").replace(',', '\u0000').replace('，', '\u0000')).isEmpty()) tr("關掉 AI 回覆時請至少填一句引流語", "With AI replies off, add at least one funnel line") else null
+            else -> null
+        }
+        val last = stepIdx == steps.size - 1
+        if (!last) {
+            val nav = ui.row()
+            if (stepIdx > 0) nav.addView(ui.secondary(tr("上一步", "Back")) { goStep(steps[stepIdx - 1]) }, ui.weight().apply { marginEnd = ui.dp(10) })
+            nav.addView(ui.primary(tr("下一步：", "Next: ") + stepLabel(steps[stepIdx + 1])) {
+                val why = checkStep(stepNow)
+                if (why != null) { toast(why); return@primary }
+                goStep(steps[stepIdx + 1])
+            }, ui.weight())
+            this.add(nav, bottom = 10)
+        } else {
+            this.add(ui.primary(if (editing) tr("保存", "Save") else tr("保存並運行", "Save and run")) {
+                val t = build() ?: return@primary
+                saveTask(t, if (editing) configBack else Screen.HOME) { if (!editing) runTask(t.optString("id")) }
+            }, bottom = 10)
+            val nav = ui.row()
+            nav.addView(ui.secondary(tr("上一步", "Back")) { goStep(steps[stepIdx - 1]) }, ui.weight())
+            if (!editing) nav.addView(ui.secondary(tr("只保存", "Save only")) {
+                val t = build() ?: return@secondary
+                // Saved without running: "every N hours" waits a full interval instead of starting right away.
+                if (Schedule.kind(t) is Schedule.Kind.Every) Prefs.setLastStart(t.optString("id"), System.currentTimeMillis())
+                saveTask(t, Screen.HOME)
+            }, ui.weight().apply { marginStart = ui.dp(10) })
+            this.add(nav)
+        }
     }
 
     // ---------- save / sync ----------

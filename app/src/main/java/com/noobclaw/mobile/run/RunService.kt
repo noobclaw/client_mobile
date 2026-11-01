@@ -57,6 +57,10 @@ class RunService : Service() {
             }
             ACTION_RUN_NOW -> startRun("manual-" + System.currentTimeMillis(), dryRun = false, taskId = intent.getStringExtra(EXTRA_TASK_ID))
             ACTION_DRY_RUN -> startRun("dry-" + System.currentTimeMillis(), dryRun = true, taskId = intent.getStringExtra(EXTRA_TASK_ID))
+            // 檢測帳號:只打開 TikTok 讀「我的」頁的帳號,不點讚不評論(沒帳號就不能建任務)
+            ACTION_DETECT_ACCOUNT -> startRun("detect-" + System.currentTimeMillis(), dryRun = true, taskId = null, synthetic = JSONObject()
+                .put("id", "detect").put("script_id", "tiktok_comment_like").put("platform", "tiktok").put("detect_only", true)
+                .put("max_run_minutes", 5).put("config", JSONObject().put("comment_mode", "keywords").put("keywords", org.json.JSONArray().put("tiktok"))))
             ACTION_CAPTURE, ACTION_CAPTURE_NOW -> if (captureJob?.isActive != true) {
                 val wait = intent?.action == ACTION_CAPTURE
                 captureJob = scope.launch {
@@ -203,9 +207,9 @@ class RunService : Service() {
         }
     }
 
-    private fun startRun(slotKey: String, dryRun: Boolean, taskId: String?) {
+    private fun startRun(slotKey: String, dryRun: Boolean, taskId: String?, synthetic: JSONObject? = null) {
         if (currentRun?.isActive == true) { RunLog.w(tr("已有任務在運行，忽略這次觸發", "A task is already running; ignored")); return }
-        currentRun = scope.launch { runOnce(slotKey, dryRun, taskId) }
+        currentRun = scope.launch { runOnce(slotKey, dryRun, taskId, synthetic) }
     }
 
     private fun stopCurrentRun(reason: String) {
@@ -215,7 +219,7 @@ class RunService : Service() {
         scope.launch { delay(3000); job?.cancel() } // FR-10: everything stops within 3 s (only the run being stopped)
     }
 
-    private suspend fun runOnce(slotKey: String, dryRun: Boolean, taskId: String?) {
+    private suspend fun runOnce(slotKey: String, dryRun: Boolean, taskId: String?, synthetic: JSONObject? = null) {
         val runId = UUID.randomUUID().toString()
         val started = System.currentTimeMillis()
         val report = JSONObject().put("run_id", runId).put("slot", slotKey).put("dry_run", dryRun)
@@ -223,7 +227,7 @@ class RunService : Service() {
             val pre = preconditions()
             if (pre != null) { report.put("status", "skipped").put("reason", pre); RunLog.w(tr("跳過運行：", "Skipped: ") + pre, runId); return }
             // A task deleted in the meantime is skipped, never swapped for another one.
-            val task = (if (taskId == null) Prefs.tasks().firstOrNull() else Prefs.tasks().firstOrNull { it.optString("id") == taskId })
+            val task = synthetic ?: (if (taskId == null) Prefs.tasks().firstOrNull() else Prefs.tasks().firstOrNull { it.optString("id") == taskId })
                 ?: run { report.put("status", "skipped").put("reason", "no_task"); RunLog.w(tr("跳過運行：沒有任務", "Skipped: no task"), runId); return }
             runningTaskId = task.optString("id")
             runningRunId = runId
@@ -232,7 +236,7 @@ class RunService : Service() {
             val binding = runCatching { JSONObject(Prefs.bindingJson) }.getOrElse { JSONObject() } // filled by the script (setAccount)
             report.put("late_sec", Schedule.lateSeconds(task, slotKey, ZonedDateTime.now()))
             val (pkg, ver) = targetAppInfo() ?: run { report.put("status", "skipped").put("reason", "app_not_installed"); return }
-            if (!dryRun) Prefs.setLastStart(task.optString("id"), started) // the run really starts: "every N hours" counts from here
+            if (!dryRun && synthetic == null) Prefs.setLastStart(task.optString("id"), started) // the run really starts: "every N hours" counts from here
             RunLog.i(tr("開始運行", "Run started") + "（" + (if (dryRun) tr("試跑", "dry run") else tr("正式", "live")) + "）· $pkg v$ver", runId)
             val pack = ScriptLoader.load(task.optString("script_id", "tiktok_comment_like"), ver)
             report.put("script_version", pack.version)
@@ -282,8 +286,8 @@ class RunService : Service() {
             report.put("duration_ms", System.currentTimeMillis() - started)
             // NonCancellable: the report still goes out when the run was cancelled or the service is stopping.
             kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
-                runCatching { Api.reportRun(report) }
-                if (report.optString("task_id").isNotEmpty() && report.optString("status") != "skipped") runCatching {
+                if (synthetic == null) runCatching { Api.reportRun(report) }   // 檢測帳號不算一次運行
+                if (synthetic == null && report.optString("task_id").isNotEmpty() && report.optString("status") != "skipped") runCatching {
                     Prefs.recordRun(JSONObject().put("run_id", runId).put("task_id", report.optString("task_id"))
                         .put("status", report.optString("status")).put("reason", report.optString("reason"))
                         .put("dry_run", dryRun).put("counts", res.optJSONObject("counts") ?: JSONObject())
@@ -385,6 +389,7 @@ class RunService : Service() {
         const val RETRY_MS = 15 * 60_000L         // skipped "every N h" run: try again after 15 min
         const val ACTION_RUN_NOW = "com.noobclaw.mobile.RUN_NOW"
         const val ACTION_DRY_RUN = "com.noobclaw.mobile.DRY_RUN"
+        const val ACTION_DETECT_ACCOUNT = "com.noobclaw.mobile.DETECT_ACCOUNT"
         const val ACTION_STOP_RUN = "com.noobclaw.mobile.STOP_RUN"
         const val ACTION_SHUTDOWN = "com.noobclaw.mobile.SHUTDOWN"
         const val ACTION_CAPTURE = "com.noobclaw.mobile.CAPTURE"
