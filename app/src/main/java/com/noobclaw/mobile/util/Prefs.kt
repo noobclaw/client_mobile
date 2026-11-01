@@ -100,9 +100,11 @@ object Prefs {
     /** One task per platform: the first one of each platform (what the UI shows and the scheduler runs). */
     fun primaryTasks(): List<org.json.JSONObject> = tasks().distinctBy { platformOf(it) }
 
-    var cooldownUntil: Long
-        get() = sp.getLong(K_COOLDOWN, 0L)
-        set(v) = sp.edit().putLong(K_COOLDOWN, v).apply()
+    /** Cooldown after a verification, per platform (TikTok keeps the old key). [cooldownUntil] = the latest of them. */
+    fun cooldownFor(platform: String): Long = sp.getLong(if (platform == "tiktok") K_COOLDOWN else "cooldown_$platform", 0L)
+    fun setCooldownFor(platform: String, v: Long) = sp.edit().putLong(if (platform == "tiktok") K_COOLDOWN else "cooldown_$platform", v).apply()
+    val cooldownUntil: Long
+        get() = maxOf(cooldownFor("tiktok"), cooldownFor("douyin"), cooldownFor("xhs"))
 
     /** UI language code (I18n.Lang.code); empty = follow the system. Kept across logout. */
     var lang: String

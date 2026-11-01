@@ -92,7 +92,7 @@ class ScriptEngine(
     private val governor = Governor(maxInputsPerMinute = 30)
     private val caps = RunCaps.fromTask(task)
     /** tiktok / douyin / xhs: decides the app, allowed links, bound account and the billing platform. */
-    private val platform = task.optString("platform").ifEmpty { "tiktok" }
+    private val platform = com.noobclaw.mobile.util.Prefs.platformOf(task)
     private val used = HashMap<String, Int>()
     private val dryState = HashMap<String, Any?>()
     private val counts = JSONObject()
@@ -119,6 +119,7 @@ class ScriptEngine(
 
     suspend fun run(): JSONObject {
         val quickJs = QuickJs.create(Dispatchers.Default)
+        A11yGuard.runPlatform = platform
         try {
             quickJs.evaluationTimeoutMillis = caps.maxRunMs + 10 * 60_000 // scripts stop themselves at maxRunMs; this is the backstop
             quickJs.asyncFunction("__nc_call") { args ->
@@ -138,6 +139,7 @@ class ScriptEngine(
             val result = runCatching { JSONObject(raw) }.getOrElse { JSONObject().put("value", raw) }
             return synchronized(statLock) { result.put("counts", counts).put("targets", targets).put("credits", credits) }
         } finally {
+            A11yGuard.runPlatform = null
             quickJs.close()
         }
     }
@@ -235,7 +237,7 @@ const ctx = Object.freeze({
                 }
                 "appVersion" -> {
                     val pkg = a.optString("pkg")
-                    if (!A11yGuard.isTarget(pkg)) return err("not_allowed", "guard_blocked")
+                    if (!A11yGuard.isRunTarget(pkg)) return err("not_allowed", "guard_blocked")
                     val pi = runCatching { appCtx.packageManager.getPackageInfo(pkg, 0) }.getOrNull()
                     ok(if (pi == null) null else JSONObject().put("name", pi.versionName ?: "").put("code", pi.longVersionCode))
                 }
@@ -274,13 +276,13 @@ const ctx = Object.freeze({
                     // Only the platform's own links, and only into its installed app (never a browser).
                     val url = a.optString("url")
                     val allowed = when (platform) {
-                        "douyin" -> Regex("^(https://((www|v|m)\\.)?(douyin|iesdouyin)\\.com/[^\\s]*|snssdk1128://[^\\s]+)$", RegexOption.IGNORE_CASE)
-                        "xhs" -> Regex("^(https://((www)\\.)?xiaohongshu\\.com/[^\\s]*|https://xhslink\\.com/[^\\s]*|xhsdiscover://[^\\s]+)$", RegexOption.IGNORE_CASE)
+                        "douyin" -> Regex("^https://((www|v|m)\\.)?(douyin|iesdouyin)\\.com/[^\\s]*$", RegexOption.IGNORE_CASE)
+                        "xhs" -> Regex("^https://((www\\.)?xiaohongshu\\.com|xhslink\\.com)/[^\\s]*$", RegexOption.IGNORE_CASE)
                         else -> Regex("^https://(www\\.|m\\.|vm\\.|vt\\.)?tiktok\\.com/[^\\s]*$", RegexOption.IGNORE_CASE)
                     }
                     if (!allowed.matches(url)) return err("url_not_allowed", "guard_blocked")
                     val pkg = task.optString("target_package")
-                    if (!A11yGuard.isTarget(pkg)) return err("not_allowed", "guard_blocked")
+                    if (!A11yGuard.isRunTarget(pkg)) return err("not_allowed", "guard_blocked")
                     governor.acquire()
                     val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)).setPackage(pkg).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     runCatching { appCtx.startActivity(intent) }.fold({ ok(true) }, { err("open_failed", "open_failed") })
@@ -320,7 +322,7 @@ const ctx = Object.freeze({
                 }
                 "openApp" -> {
                     val pkg = a.optString("pkg")
-                    if (!A11yGuard.isTarget(pkg)) return err("not_allowed", "guard_blocked")
+                    if (!A11yGuard.isRunTarget(pkg)) return err("not_allowed", "guard_blocked")
                     val intent = appCtx.packageManager.getLaunchIntentForPackage(pkg)
                         ?: return err("app_not_installed", "app_not_installed")
                     intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)

@@ -18,7 +18,11 @@ object A11yGuard {
 
     class Blocked(reason: String) : SecurityException(reason)
 
+    /** Platform of the script running now: taps / typing are allowed only in that platform's app (null = no run). */
+    @Volatile var runPlatform: String? = null
+    fun isRunTarget(pkg: CharSequence?): Boolean = isTarget(pkg) && runPlatform.let { it == null || platformOfPackage(pkg) == it }
+
     fun requireTarget(activePkg: CharSequence?) {
-        if (!isTarget(activePkg)) throw Blocked("guard_blocked: active window is ${activePkg ?: "unknown"}")
+        if (!isRunTarget(activePkg)) throw Blocked("guard_blocked: active window is ${activePkg ?: "unknown"}")
     }
 }

@@ -111,6 +111,9 @@ class MainActivity : AppCompatActivity() {
     private fun platformOf(t: JSONObject): String = Prefs.platformOf(t)
     /** One task per platform; the TikTok task is the first TikTok one in the list (the scheduler uses the same pick). */
     private fun taskFor(platform: String) = Prefs.primaryTasks().firstOrNull { platformOf(it) == platform }
+    /** Platform whose task the detail screen shows (set when opening it). */
+    private var detailPlatform = "tiktok"
+    private fun detailTask() = taskFor(detailPlatform)
     private fun hm(h: Int, m: Int) = String.format(java.util.Locale.US, "%02d:%02d", h, m)
     private fun taskById(id: String?) = Prefs.tasks().firstOrNull { it.optString("id") == id }
 
@@ -361,8 +364,8 @@ class MainActivity : AppCompatActivity() {
         add(ui.h1(tr("使用說明", "Before you start")), bottom = 16)
         val card = ui.card()
         listOf(
-            tr("通過無障礙服務操作 TikTok，只讀 TikTok 界面", "Works TikTok through the accessibility service and reads only TikTok's screen"),
-            tr("遇到平台驗證會自動停下", "Stops by itself when TikTok asks for verification"),
+            tr("通過無障礙服務操作 TikTok / 抖音 / 小紅書，只讀這些 App 的界面", "Works TikTok / Douyin / RedNote through the accessibility service and reads only their screens"),
+            tr("遇到平台驗證會自動停下", "Stops by itself when the app asks for verification"),
             tr("自動化有帳號受限風險，請自行評估", "Automation can get accounts restricted — use at your own judgement"),
         ).forEach { card.addView(ui.text("•  $it", 14f, C.TEXT), ui.lp(bottom = 8)) }
         add(card, bottom = 16)
@@ -504,7 +507,7 @@ class MainActivity : AppCompatActivity() {
                 PermKind.BATTERY -> tr("後台運行", "Run in background")
             }, 16f, C.TEXT, true))
             t.addView(ui.text(when (k) {
-                PermKind.A11Y -> tr("讓 NoobClaw 能替你在 TikTok 裡點讚、回覆。", "Lets NoobClaw tap and type in TikTok for you.")
+                PermKind.A11Y -> tr("讓 NoobClaw 能替你在 TikTok / 抖音 / 小紅書裡點讚、回覆。", "Lets NoobClaw tap and type in TikTok / Douyin / RedNote for you.")
                 PermKind.OVERLAY -> tr("在屏幕邊上顯示 NoobClaw 懸浮球，能隨時啟動、停止、看進度。", "Shows the NoobClaw tab on screen to start, stop and see progress.")
                 PermKind.BATTERY -> tr("鎖屏或切到別的 App 時，任務也能按時運行。", "Keeps tasks on schedule when the screen is off or you switch apps.")
             }, 13f, C.SUB), ui.lp(top = 2))
@@ -563,8 +566,8 @@ class MainActivity : AppCompatActivity() {
     private fun avColor(h: String): Int { var n = 0L; for (c in h) n = (n * 31 + c.code) and 0xffffffffL; return AV[(n % AV.size).toInt()] }
 
     /** Initial-letter avatar + nickname + @handle. */
-    private fun accountRow(withModel: Boolean = false): View? {
-        val b = binding()
+    private fun accountRow(withModel: Boolean = false, platform: String? = null): View? {
+        val b = binding(platform ?: currentTab())
         val handle = b.optString("display_id").ifEmpty { return null }
         val nick = b.optString("nickname").ifEmpty { handle.removePrefix("@") }
         val r = ui.row()
@@ -849,7 +852,7 @@ class MainActivity : AppCompatActivity() {
         val btns = ui.row()
         btns.addView(ui.small(tr("刪除", "Delete"), C.DANGER, C.SURFACE, ui.alpha(C.DANGER, 100)) { confirmDelete(t) }, ui.weight())
         btns.addView(gap(8))
-        btns.addView(ui.small(tr("查看", "View")) { go(Screen.DETAIL) }, ui.weight())
+        btns.addView(ui.small(tr("查看", "View")) { detailPlatform = platformOf(t); go(Screen.DETAIL) }, ui.weight())
         btns.addView(gap(8))
         btns.addView(ui.small(tr("▶ 運行", "▶ Run"), C.ON_ACCENT, C.ACCENT, null, appInstalled(platformOf(t))) { runTask(id) }, ui.weight())
         body.addView(btns)
@@ -922,7 +925,7 @@ class MainActivity : AppCompatActivity() {
         val p = ui.panel()
         val head = ui.col().apply { background = ui.shape(ui.alpha(C.ACCENT, 18), 10, ui.alpha(C.ACCENT, 90)) }
         val mq = TextView(this).apply {
-            text = "●  " + tr("正在運行", "Running") + " TikTok · " + name + "          "
+            text = "●  " + tr("正在運行", "Running") + " " + platformName(t?.let { platformOf(it) } ?: "tiktok") + " · " + name + "          "
             textSize = 13f; setTextColor(C.ACCENT); typeface = android.graphics.Typeface.DEFAULT_BOLD
             isSingleLine = true; ellipsize = TextUtils.TruncateAt.MARQUEE; marqueeRepeatLimit = -1
             isFocusable = true; isFocusableInTouchMode = true; isSelected = true; isHorizontalFadingEdgeEnabled = true
@@ -934,14 +937,14 @@ class MainActivity : AppCompatActivity() {
         p.addView(head, ui.lp().apply { setMargins(ui.dp(8), ui.dp(8), ui.dp(8), 0) })
         val body = ui.col().apply { setPadding(ui.dp(12), ui.dp(10), ui.dp(12), ui.dp(12)) }
         // 運行中的那個任務的平台帳號(不是當前標籤頁的)
-        (taskById(RunService.runningTaskId)?.let { platformOf(it) } ?: currentTab()).let { rp -> if (rp == currentTab()) accountRow() else null }
+        accountRow(platform = taskById(RunService.runningTaskId)?.let { platformOf(it) } ?: currentTab())
             ?.let { body.addView(it, ui.lp(bottom = 8)); body.addView(ui.divider(), ui.lp(h = 1, bottom = 8)) }
         body.addView(stepList(RunService.runningRunId, 6, true), ui.lp(bottom = 12))
         val r = ui.row().apply { gravity = Gravity.CENTER }
         r.addView(ui.small(tr("■ 停止", "■ Stop"), Color.WHITE, C.DANGER, null) { RunService.start(this, RunService.ACTION_STOP_RUN) }
             .apply { setPadding(ui.dp(24), ui.dp(7), ui.dp(24), ui.dp(7)); textSize = 13f })
         body.addView(r)
-        if (t != null) body.addView(ui.link(tr("查看詳情 ›", "Details ›"), C.SUB) { go(Screen.DETAIL) }.apply { gravity = Gravity.CENTER }, ui.lp(top = 4))
+        if (t != null) body.addView(ui.link(tr("查看詳情 ›", "Details ›"), C.SUB) { detailPlatform = platformOf(t); go(Screen.DETAIL) }.apply { gravity = Gravity.CENTER }, ui.lp(top = 4))
         p.addView(body)
         return p
     }
@@ -958,7 +961,7 @@ class MainActivity : AppCompatActivity() {
     private fun statusColor(s: String) = when (s) { "done", "ok", "completed" -> C.ACCENT; "stopped" -> C.WARN; else -> C.DANGER }
 
     private fun renderDetail() {
-        val t = taskFor("tiktok") ?: taskById(RunService.runningTaskId) ?: run { go(Screen.HOME); return }
+        val t = detailTask() ?: taskById(RunService.runningTaskId) ?: run { go(Screen.HOME); return }
         val id = t.optString("id")
         val sid = t.optString("script_id")
         val running = RunService.runningTaskId == id
@@ -1622,6 +1625,13 @@ class MainActivity : AppCompatActivity() {
         add(schedBox, bottom = 28)
 
         fun lines(s: String) = s.split('\n', ',', '，').map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+        // 抖音 / 小紅書:「分享 → 複製鏈接」帶著一段文字,取出其中的鏈接;只收本平台域名
+        val hostRe = if (plat == "xhs") Regex("^https://([a-z0-9-]+\\.)*(xiaohongshu\\.com|xhslink\\.com)(/|$)", RegexOption.IGNORE_CASE)
+            else Regex("^https://([a-z0-9-]+\\.)*(douyin\\.com|iesdouyin\\.com)(/|$)", RegexOption.IGNORE_CASE)
+        fun platLinks(raw: String): List<String> = lines(raw).mapNotNull { l ->
+            Regex("https?://[^\\s，。]+", RegexOption.IGNORE_CASE).find(l)?.value?.trimEnd('.', ')', '!', '?', ';', ':')
+                ?.replace(Regex("^http://", RegexOption.IGNORE_CASE), "https://")?.takeIf { hostRe.containsMatchIn(it) }
+        }.distinct()
         fun build(): JSONObject? {
             val words = lines(d.optString("_kw")).take(20)
             val rawTargets = lines(d.optString("_tg"))
@@ -1630,7 +1640,7 @@ class MainActivity : AppCompatActivity() {
             val idRe = Regex("^@?[A-Za-z0-9._]{2,24}$")
             val targets = if (cl) rawTargets.map { if (idRe.matches(it) && !it.equals("tiktok.com", true)) "https://www.tiktok.com/@" + it.removePrefix("@") else it.replace(Regex("^http://", RegexOption.IGNORE_CASE), "https://") }.filter { urlRe.matches(it) }.take(20)
                 else if (tt) rawTargets.map { if (it.startsWith("http", true) || it.startsWith("@")) it else "@$it" }.take(20)
-                else rawTargets.map { it.replace(Regex("^http://", RegexOption.IGNORE_CASE), "https://") }.filter { it.startsWith("https://", true) }.take(50)
+                else platLinks(d.optString("_tg")).take(50)
             if (kwMode && words.isEmpty()) { toast(tr("請填至少 1 個關鍵詞", "Add at least one keyword")); return null }
             if (!kwMode && targets.isEmpty()) {
                 toast(if (cl) tr("請填 TikTok 作品鏈接、主頁鏈接或用戶 ID", "Add a TikTok video link, profile link or user ID")
@@ -1713,6 +1723,7 @@ class MainActivity : AppCompatActivity() {
         fun goStep(k: String) { d.put("_step", k); render(); scroll.scrollTo(0, 0) }
         fun checkStep(k: String): String? = when (k) {
             "task" -> if (kwMode && lines(d.optString("_kw")).isEmpty()) tr("請填至少 1 個關鍵詞", "Add at least one keyword")
+                else if (!kwMode && !cl && !tt && platLinks(d.optString("_tg")).isEmpty()) tr("請填 ${platformName(plat)} 的鏈接(在 App 裡「分享 → 複製鏈接」)", "Add a ${platformName(plat)} link (Share → Copy link in the app)")
                 else if (!kwMode && lines(d.optString("_tg")).isEmpty()) (if (cl) tr("請填 TikTok 作品鏈接或用戶 ID", "Add a TikTok video link or user ID") else if (!tt) tr("請填至少 1 個鏈接", "Add at least one link") else tr("請填至少 1 個同行帳號", "Add at least one competitor account"))
                 else null
             "act" -> if (!d.optBoolean("_doLike") && !d.optBoolean("_doReply")) tr("請至少開啟一個動作", "Turn on at least one action") else null
@@ -1768,7 +1779,7 @@ class MainActivity : AppCompatActivity() {
                 RunService.start(this@MainActivity) // stand by: schedules + runs started from the desktop app
                 draft = null
                 toast(msg)
-                go(if (then == Screen.DETAIL && taskFor("tiktok") == null) Screen.HOME else then)
+                go(if (then == Screen.DETAIL && detailTask() == null) Screen.HOME else then)
                 after?.invoke()
             } catch (e: com.noobclaw.mobile.net.ApiException) {
                 toast(if (e.code == "one_task_per_platform") tr("每個平台只能建 1 個任務", "One task per platform")

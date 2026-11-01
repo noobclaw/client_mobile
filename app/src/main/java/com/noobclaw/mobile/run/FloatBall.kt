@@ -273,7 +273,7 @@ object FloatBall {
             val lp = RunService.liveProgress()
             val c = lp?.optJSONObject("counts") ?: JSONObject()
             // 检测账号不是任务:不显示点赞数 / 计时,只提示正在读账号
-            p.text = if (RunService.runningTaskId == "detect") tr("正在讀取 TikTok 帳號…", "Reading TikTok account…")
+            p.text = if (RunService.runningTaskId == "detect") tr("正在讀取帳號…", "Reading the account…")
                 else countsLine(c, lp?.optJSONObject("targets"), taskById(RunService.runningTaskId), withCap = false, sep = "  ") + " · ${elapsed()}"
             p.visibility = View.VISIBLE
         } else if (System.currentTimeMillis() > hintUntil || popupKind == "menu") p.visibility = View.GONE

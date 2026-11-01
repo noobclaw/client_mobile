@@ -44,6 +44,7 @@ class RunService : Service() {
     @Volatile private var notifJob: Job? = null
     @Volatile private var serverTasksAt = false     // 服务器支持 tasks_at(任务改动即时通知)
     @Volatile private var nextHbMs = HEARTBEAT_MS   // 服务器给的下次心跳间隔
+    @Volatile private var lastHbAt = 0L
     @Volatile private var lastTasksAt = 0L          // 服務器任務列表的最後修改時間(心跳帶回)
     private val lastTry = HashMap<String, Long>() // every-N tasks: last time the scheduler tried to start them
     private val slotRejectedAt = HashMap<String, Long>()
@@ -112,6 +113,9 @@ class RunService : Service() {
         var lastFetch = 0L
         var lastCompliance = 0L
         while (scope.isActive) {
+            // the server refuses heartbeats closer than 5 s (429): keep a 6 s gap after an early wake-up
+            (6_000L - (System.currentTimeMillis() - lastHbAt)).takeIf { it > 0 }?.let { delay(it) }
+            lastHbAt = System.currentTimeMillis()
             runCatching { heartbeat() }.onFailure { RunLog.w(tr("心跳失敗：", "Heartbeat failed: ") + it.message) }
             val now = System.currentTimeMillis()
             // 任务列表:服务器会在心跳里告诉我们它改过没有(tasks_at,改了马上拉),所以只需每 5 分钟兜底拉一次;
@@ -124,7 +128,7 @@ class RunService : Service() {
             runCatching { uploadLogs() }
             // 心跳间隔听服务器的(在跑 / 电脑端在看 = 15 秒,空闲更慢);在跑任务时本地也固定 15 秒,进度及时
             val wait = if (currentRun?.isActive == true) HEARTBEAT_MS else nextHbMs
-            delay(wait)
+            kotlinx.coroutines.withTimeoutOrNull(wait) { wake.receive() }
         }
     }
 
@@ -175,7 +179,7 @@ class RunService : Service() {
         }
         serverTasksAt = r.has("tasks_at")
         val tasksAt = r.optLong("tasks_at", 0L)
-        if (tasksAt > 0 && tasksAt != lastTasksAt) { lastTasksAt = tasksAt; refreshTasks() }
+        if (tasksAt > 0 && tasksAt != lastTasksAt && refreshTasks()) lastTasksAt = tasksAt
         // Run / stop requests sent from the desktop app ("我的手機").
         val cmds = r.optJSONArray("commands") ?: return
         for (i in 0 until cmds.length()) {
@@ -191,8 +195,11 @@ class RunService : Service() {
         }
     }
 
-    private suspend fun refreshTasks() {
-        runCatching { Api.fetchTasks().optJSONArray("tasks") }.getOrNull()?.let { Prefs.tasksJson = it.toString() }
+    /** true = fetched (a failed fetch is retried at the next heartbeat). */
+    private suspend fun refreshTasks(): Boolean {
+        val arr = runCatching { Api.fetchTasks().optJSONArray("tasks") }.getOrNull() ?: return false
+        Prefs.tasksJson = arr.toString()
+        return true
     }
 
     private suspend fun uploadLogs() {
@@ -230,8 +237,11 @@ class RunService : Service() {
 
     private fun startRun(slotKey: String, dryRun: Boolean, taskId: String?, synthetic: JSONObject? = null) {
         if (currentRun?.isActive == true) { RunLog.w(tr("已有任務在運行，忽略這次觸發", "A task is already running; ignored")); return }
-        currentRun = scope.launch { runOnce(slotKey, dryRun, taskId, synthetic) }
+        currentRun = scope.launch { try { runOnce(slotKey, dryRun, taskId, synthetic) } finally { wake.trySend(Unit) } }
+        wake.trySend(Unit) // heartbeat now: the desktop sees "running" and our stop commands arrive without waiting out an idle interval
     }
+    /** Cuts the idle heartbeat wait short (run started / finished). */
+    private val wake = kotlinx.coroutines.channels.Channel<Unit>(kotlinx.coroutines.channels.Channel.CONFLATED)
 
     private fun stopCurrentRun(reason: String) {
         engine?.abortRequested = true
@@ -249,8 +259,12 @@ class RunService : Service() {
             val pre = preconditions()
             if (pre != null) { report.put("status", "skipped").put("reason", pre); RunLog.w(tr("跳過運行：", "Skipped: ") + pre, runId); return }
             // A task deleted in the meantime is skipped, never swapped for another one.
-            val task = synthetic ?: (if (taskId == null) Prefs.tasks().firstOrNull() else Prefs.tasks().firstOrNull { it.optString("id") == taskId })
+            val task = synthetic ?: (if (taskId == null) Prefs.primaryTasks().firstOrNull { Prefs.platformOf(it) !in Prefs.hiddenPlatforms } else Prefs.tasks().firstOrNull { it.optString("id") == taskId })
                 ?: run { report.put("status", "skipped").put("reason", "no_task"); RunLog.w(tr("跳過運行：沒有任務", "Skipped: no task"), runId); return }
+            // 冷卻 / 合規隱藏 只看這個任務的平台(抖音出驗證不影響 TikTok)
+            val taskPf = Prefs.platformOf(task)
+            if (System.currentTimeMillis() < Prefs.cooldownFor(taskPf)) { report.put("status", "skipped").put("reason", "cooldown"); RunLog.w(tr("跳過運行：", "Skipped: ") + "cooldown", runId); return }
+            if (synthetic == null && taskPf in Prefs.hiddenPlatforms) { report.put("status", "skipped").put("reason", "platform_hidden"); RunLog.w(tr("跳過運行：", "Skipped: ") + "platform_hidden", runId); return }
             runningTaskId = task.optString("id")
             runningRunId = runId
             runStartedAt = started
@@ -280,7 +294,7 @@ class RunService : Service() {
             report.put("status", result.optString("status", "done")).put("result", result)
             // The run row has its own reason column: fill it from the script result (time, caps_reached, profile_tab_not_found …).
             result.optString("reason").takeIf { it.isNotEmpty() }?.let { report.put("reason", it.take(200)) }
-            handleChallenge(result, runId, dryRun)
+            handleChallenge(result, runId, dryRun, Prefs.platformOf(task))
             RunLog.i(tr("運行結束：", "Run finished: ") + "${result.optString("status", "done")} ${result.optString("reason")}", runId)
         } catch (e: ScriptLoader.Rejected) {
             report.put("status", "rejected").put("reason", e.reason)
@@ -377,12 +391,11 @@ class RunService : Service() {
         if (Prefs.token.isEmpty()) return "not_logged_in"
         if (Prefs.consentVersion < CONSENT_VERSION) return "consent_required"
         if (!NcAccessibilityService.isRunning) return "a11y_disabled"
-        if (System.currentTimeMillis() < Prefs.cooldownUntil) return "cooldown"
         return null
     }
 
     /** FR-08: per-kind cooldown, never shorter than the desktop manifest values; FR-18 notification. */
-    private suspend fun handleChallenge(result: JSONObject, runId: String, dryRun: Boolean) {
+    private suspend fun handleChallenge(result: JSONObject, runId: String, dryRun: Boolean, platform: String) {
         val kind = result.optString("challenge")
         if (kind.isEmpty()) return
         val hours = when (kind) {
@@ -391,9 +404,11 @@ class RunService : Service() {
             "verify_identity", "account_flagged" -> 72L
             else -> 24L
         }
-        Prefs.cooldownUntil = System.currentTimeMillis() + hours * 3600_000
-        RunLog.w(tr("遇到平台驗證（$kind），已停止，冷卻 $hours 小時。請在這臺手機上手動處理。", "TikTok asked for verification ($kind): stopped, cooling down $hours h. Please handle it on this phone."), runId)
-        if (!dryRun) runCatching { Api.notify("challenge:$kind", "TikTok 出現驗證（$kind），任務已停止並冷卻 $hours 小時，請在這台雲手機上手動處理。") }
+        Prefs.setCooldownFor(platform, System.currentTimeMillis() + hours * 3600_000)
+        val pn = when (platform) { "douyin" -> "抖音"; "xhs" -> "小紅書"; else -> "TikTok" }
+        val pnEn = when (platform) { "douyin" -> "Douyin"; "xhs" -> "RedNote"; else -> "TikTok" }
+        RunLog.w(tr("$pn 遇到平台驗證（$kind），已停止，冷卻 $hours 小時。請在這臺手機上手動處理。", "$pnEn asked for verification ($kind): stopped, cooling down $hours h. Please handle it on this phone."), runId)
+        if (!dryRun) runCatching { Api.notify("challenge:$kind", "$pn 出現驗證（$kind），任務已停止並冷卻 $hours 小時，請在這台雲手機上手動處理。") }
     }
 
     private fun targetAppInfo(platform: String = "tiktok"): Pair<String, Long>? {
@@ -416,7 +431,10 @@ class RunService : Service() {
         val msg = when {
             handle.isNotEmpty() -> tr("讀取成功：", "Account found: ") + handle
             refused -> tr("檢測沒能開始，請稍後再試", "Couldn't start detecting — try again later")
-            else -> tr("沒讀到 TikTok 帳號，請確認 TikTok 已登錄後重試", "No TikTok account found — make sure you're logged in to TikTok and retry")
+            else -> {
+                val pn = when (detectPlatform) { "douyin" -> tr("抖音", "Douyin"); "xhs" -> tr("小紅書", "RedNote"); else -> "TikTok" }
+                tr("沒讀到 $pn 帳號，請確認 $pn 已登錄後重試", "No $pn account found — make sure you're logged in to $pn and retry")
+            }
         }
         val main = android.os.Handler(android.os.Looper.getMainLooper())
         main.post {
