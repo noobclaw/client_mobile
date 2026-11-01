@@ -245,7 +245,7 @@ class RunService : Service() {
             report.put("script_version", pack.version)
             startInForeground(tr("運行中", "Running") + " · ${pack.id}")
             // 通知欄每 5 秒更新一次進度(懸浮球之外的另一個入口)
-            notifJob = scope.launch {
+            if (synthetic == null) notifJob = scope.launch {
                 while (isActive) {
                     delay(5000)
                     val c = engine?.progress()?.optJSONObject("counts") ?: JSONObject()
@@ -314,6 +314,7 @@ class RunService : Service() {
                 if (synthetic == null) runCatching { Api.reportRun(report) }   // 檢測帳號不算一次運行
                 runCatching { uploadLogs() } // also when automation is off (manual / dry runs)
             }
+            if (synthetic != null && report.optString("status") != "stopped") detectFinished(report.optString("status") == "rejected")
             if (autostart()) startInForeground(getString(R.string.app_name) + " · " + tr("待命中", "Standing by"))
             else { currentRun = null; stopIfIdle() } // a manual run with automation off: nothing to stand by for
         }
@@ -388,6 +389,25 @@ class RunService : Service() {
 
     private fun doneSlots(): Set<String> =
         getSharedPreferences("nc_slots", Context.MODE_PRIVATE).getStringSet("done", emptySet()) ?: emptySet()
+
+    /** 「检测账号」结束:提示读到了没有,并回到 NoobClaw(用户点按钮时就在 App 里,检测完应该回来建任务)。 */
+    private fun detectFinished(refused: Boolean) {
+        val handle = runCatching { JSONObject(Prefs.bindingJson).optString("display_id") }.getOrDefault("")
+        val msg = when {
+            handle.isNotEmpty() -> tr("讀取成功：", "Account found: ") + handle
+            refused -> tr("檢測沒能開始，請稍後再試", "Couldn't start detecting — try again later")
+            else -> tr("沒讀到 TikTok 帳號，請確認 TikTok 已登錄後重試", "No TikTok account found — make sure you're logged in to TikTok and retry")
+        }
+        val main = android.os.Handler(android.os.Looper.getMainLooper())
+        main.post {
+            android.widget.Toast.makeText(applicationContext, msg, android.widget.Toast.LENGTH_LONG).show()
+            // 有悬浮窗权限的 App 可以从后台把自己调到前台
+            runCatching {
+                startActivity(Intent(applicationContext, com.noobclaw.mobile.ui.MainActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP))
+            }
+        }
+    }
 
     private fun unmarkSlot(key: String) {
         val sp = getSharedPreferences("nc_slots", Context.MODE_PRIVATE)
