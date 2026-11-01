@@ -571,8 +571,11 @@ class MainActivity : AppCompatActivity() {
     private fun renderHome() {
         val head = ui.row()
         val title = ui.col()
-        title.addView(ui.text(tr("我的雲手機", "My cloud phone"), 24f, C.TEXT, true))
-        title.addView(ui.sub("v${BuildConfig.VERSION_NAME}（${BuildConfig.VERSION_CODE}）"))
+        // 標題:NoobClaw + 後面小一號的版本號
+        val nameRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.BOTTOM }
+        nameRow.addView(ui.text("NoobClaw", 20f, C.TEXT, true))
+        nameRow.addView(ui.text("（v${BuildConfig.VERSION_NAME}）", 12f, C.SUB).apply { setPadding(ui.dp(4), 0, 0, ui.dp(2)) })
+        title.addView(nameRow)
         head.addView(title, ui.weight())
         add(head, bottom = 14)
 
@@ -584,7 +587,7 @@ class MainActivity : AppCompatActivity() {
         card.addView(ui.mono(tr("設備ID: ", "Device ID: ") + shortId(Prefs.deviceId), 11f, C.TEXT, true).apply {
             setPadding(ui.dp(8), ui.dp(3), ui.dp(8), ui.dp(3)); background = ui.shape(ui.alpha(C.TEXT, 14), 7, C.BORDER)
             maxLines = 1; ellipsize = TextUtils.TruncateAt.END
-        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = ui.dp(10) })
+        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = ui.dp(10); gravity = Gravity.CENTER_HORIZONTAL })
         // model + status
         val top = ui.row()
         val mt = ui.col()
