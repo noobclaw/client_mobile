@@ -431,7 +431,7 @@ object FloatBall {
         fun on(k: String, cfgKey: String): Boolean =
             if (targets != null && targets.has(k)) targets.optLong(k) > 0 || c.optLong(k) > 0
             else cfg?.optBoolean(cfgKey, true) ?: true
-        fun cap(k: String) = if (withCap) targets?.optLong(k)?.takeIf { it in 1 until 100_000_000 }?.let { "/$it" } ?: ""   // 不限数量 = 不显示 /上限 else ""
+        fun cap(k: String) = if (withCap) targets?.optLong(k)?.takeIf { it in 1 until 100_000_000 }?.let { "/$it" } ?: "" else ""   // 不限数量 = 不显示 /上限
         val parts = mutableListOf<String>()
         if (on("like", "cl_do_like")) parts += "👍 ${c.optLong("like")}${cap("like")}"
         if (on("comment", "cl_do_reply")) parts += "💬 ${c.optLong("comment")}${cap("comment")}"
