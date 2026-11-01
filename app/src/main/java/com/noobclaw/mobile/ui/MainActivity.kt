@@ -1172,6 +1172,24 @@ class MainActivity : AppCompatActivity() {
         runCatching { Updater.install(this, apk) }.onFailure { status.text = tr("無法打開安裝程序：", "Couldn't open the installer: ") + (it.message ?: "") }
     }
 
+    /** Title on the left, a switch on the right (same interaction as the desktop editor); the whole row toggles. */
+    private fun switchRow(title: String, on: Boolean, onToggle: () -> Unit): View {
+        val r = ui.row().apply {
+            setPadding(ui.dp(14), ui.dp(12), ui.dp(14), ui.dp(12))
+            background = ui.shape(C.SURFACE2, 12, C.BORDER)
+            setOnClickListener { onToggle() }
+        }
+        r.addView(ui.text(title, 15f, C.TEXT, true), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        // track + knob drawn by hand: green when on, grey when off
+        val track = android.widget.FrameLayout(this).apply { background = ui.shape(if (on) C.ACCENT else Color.parseColor("#3A4260"), 12) }
+        val knob = View(this).apply { background = ui.shape(Color.WHITE, 9) }
+        track.addView(knob, android.widget.FrameLayout.LayoutParams(ui.dp(18), ui.dp(18)).apply {
+            gravity = Gravity.CENTER_VERTICAL or (if (on) Gravity.END else Gravity.START); marginStart = ui.dp(3); marginEnd = ui.dp(3)
+        })
+        r.addView(track, LinearLayout.LayoutParams(ui.dp(42), ui.dp(24)))
+        return r
+    }
+
     // ---------- task editor ----------
     private data class Level(val likes: Int, val comments: Int, val follows: Int, val leads: Int)
     private fun levelOf(script: String, l: String) = when (script) {
@@ -1270,7 +1288,7 @@ class MainActivity : AppCompatActivity() {
             d.put("_ai", oc?.optBoolean("cl_ai_comment", true) ?: true)
             d.put("_funnel", strs(oc?.optJSONArray("cl_funnel")).joinToString("\n"))
             d.put("_rw", oc?.optBoolean("cl_funnel_rewrite", true) ?: true)
-            d.put("_prob", oc?.optInt("cl_funnel_prob", 30) ?: 30)
+            d.put("_prob", oc?.optInt("cl_funnel_prob", 100) ?: 100)
         }
         var level = d.optString("_level").ifEmpty { levelFromCaps(d) }
         if (cl) {
@@ -1279,7 +1297,7 @@ class MainActivity : AppCompatActivity() {
             fun drawActs() {
                 actBox.removeAllViews()
                 fun action(on: Boolean, title: String, onKey: String, nKey: String, gKey: String, gHint: String) {
-                    actBox.addView(ui.chip((if (on) "✓  " else "") + title, on) { d.put(onKey, !on); render() }, ui.lp(bottom = 8))
+                    actBox.addView(switchRow(title, on) { d.put(onKey, !on); render() }, ui.lp(bottom = 8))
                     if (!on) return
                     val r = ui.row()
                     val n = ui.input(tr("最多(留空=不限)", "Max (empty = no limit)"), d.optString(nKey), number = true).apply { textSize = 14f }
@@ -1300,17 +1318,17 @@ class MainActivity : AppCompatActivity() {
             if (d.optBoolean("_doReply")) {
                 add(ui.section(tr("評論內容", "Reply content")), bottom = 8)
                 val ai = d.optBoolean("_ai")
-                add(ui.chip((if (ai) "✓  " else "") + tr("AI 根據評論自主回覆", "AI writes replies from the comment"), ai) { d.put("_ai", !ai); render() }, bottom = 12)
+                add(switchRow(tr("AI 根據評論自主回覆", "AI writes replies from the comment"), ai) { d.put("_ai", !ai); render() }, bottom = 12)
                 add(ui.sub(tr("引流語(選填,每行一句)", "Funnel lines (optional, one per line)")), bottom = 6)
                 val fn = ui.input(tr("例如:主頁有教程", "e.g. Tutorial on my profile"), d.optString("_funnel"), multi = true)
                 watch(fn, "_funnel")
                 add(fn, bottom = 10)
                 val rw = d.optBoolean("_rw")
-                add(ui.chip((if (rw) "✓  " else "") + tr("AI 改寫引流語(每次說法不同)", "AI rewords funnel lines"), rw) { d.put("_rw", !rw); render() }, bottom = 10)
+                add(switchRow(tr("AI 改寫引流語(每次說法不同)", "AI rewords funnel lines"), rw) { d.put("_rw", !rw); render() }, bottom = 10)
                 if (ai) {
                     add(ui.sub(tr("帶引流語的概率", "Chance to add a funnel line")), bottom = 6)
                     val pr = ui.row()
-                    val cur = d.optInt("_prob", 30)
+                    val cur = d.optInt("_prob", 100)
                     listOf(10, 30, 50, 100).forEachIndexed { i, v ->
                         pr.addView(ui.chip("$v%", v == cur) { d.put("_prob", v); render() }, ui.weight().apply { if (i < 3) marginEnd = ui.dp(8) })
                     }
@@ -1413,7 +1431,7 @@ class MainActivity : AppCompatActivity() {
                     .put("cl_reply_gap_sec", posInt(d.optString("_gReply"), 5, 3600) ?: 30)
                     .put("cl_ai_comment", ai).put("cl_funnel", JSONArray(funnel))
                     .put("cl_funnel_rewrite", d.optBoolean("_rw", true))
-                    .put("cl_funnel_prob", if (ai) d.optInt("_prob", 30) else 100)
+                    .put("cl_funnel_prob", if (ai) d.optInt("_prob", 100) else 100)
                 out.put("max_likes", ml ?: 1000).put("max_comments", mc ?: 300).put("max_follows", 0)
             } else {
                 val lv = levelOf(script, level)
