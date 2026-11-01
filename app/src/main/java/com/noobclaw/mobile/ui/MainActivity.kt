@@ -544,7 +544,7 @@ class MainActivity : AppCompatActivity() {
     private fun binding(): JSONObject = runCatching { JSONObject(Prefs.bindingJson) }.getOrElse { JSONObject() }
     private fun tiktokHandle() = binding().optString("display_id")
 
-    private fun tiktokInstalled(): Boolean = A11yGuard.TARGET_PACKAGES.any { pkg ->
+    private fun tiktokInstalled(): Boolean = A11yGuard.PLATFORM_PACKAGES.getValue("tiktok").any { pkg ->
         runCatching { packageManager.getPackageInfo(pkg, 0) }.isSuccess
     }
 

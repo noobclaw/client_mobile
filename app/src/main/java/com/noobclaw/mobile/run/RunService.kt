@@ -336,12 +336,12 @@ class RunService : Service() {
      */
     private suspend fun captureScreen(wait: Boolean) {
         if (wait) {
-            RunLog.i(tr("8 秒後抓取畫面：請切到 TikTok 要看的那個畫面", "Capturing the screen in 8 s: switch to the TikTok screen to look at"))
+            RunLog.i(tr("8 秒後抓取畫面：請切到要看的那個 App 畫面", "Capturing the screen in 8 s: switch to the app screen to look at"))
             delay(8000)
         }
         val tree = runCatching { com.noobclaw.mobile.a11y.UiOps { NcAccessibilityService.instance }.dumpTree(1500) }
             .getOrElse { JSONObject().put("error", it.message ?: "dump_failed") }
-        if (tree.optBoolean("redacted")) { RunLog.w(tr("前台不是 TikTok，沒有抓取", "TikTok isn't in front — nothing captured")); return }
+        if (tree.optBoolean("redacted")) { RunLog.w(tr("前台不是 TikTok / 抖音 / 小紅書，沒有抓取", "TikTok / Douyin / RedNote isn't in front — nothing captured")); return }
         val logs = org.json.JSONArray()
         RunLog.recent().takeLast(100).forEach { logs.put(JSONObject().put("ts", it.ts).put("level", it.level).put("msg", if (it.level == "step") it.msg else RunLog.redact(it.msg))) }
         val tk = targetAppInfo()
@@ -387,7 +387,7 @@ class RunService : Service() {
     }
 
     private fun targetAppInfo(): Pair<String, Long>? {
-        for (pkg in A11yGuard.TARGET_PACKAGES) {
+        for (pkg in A11yGuard.PLATFORM_PACKAGES.getValue("tiktok")) {
             val pi = runCatching { packageManager.getPackageInfo(pkg, 0) }.getOrNull() ?: continue
             return pkg to pi.longVersionCode
         }
