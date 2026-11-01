@@ -200,7 +200,7 @@ const ctx = Object.freeze({
   // The TikTok account logged in on this phone, read by the script from the profile page. No manual binding.
   setAccount: (handle, nickname) => __call('setAccount', { handle: String(handle || ''), nickname: String(nickname || '') }),
   // Friendly progress line (a code + small args); the clients render it per language.
-  say: (code, args) => __call('say', { code: String(code || ''), args: (args && typeof args === 'object') ? args : {} }),
+  say: (code, args, text) => __call('say', { code: String(code || ''), args: (args && typeof args === 'object') ? args : {}, text: String(text || '') }),
 });
 """
     }
@@ -336,7 +336,9 @@ const ctx = Object.freeze({
                 "say" -> {
                     val code = a.optString("code").trim()
                     // Only the contract's step codes, and only their argument keys; anything else is dropped.
-                    val keys = STEP_ARGS[code] ?: return ok(false)
+                    // 兜底文字(2026-11-01):劇本可以同時帶一句話,App / 電腦端不認識這個代號時就顯示它 → 新步驟熱更就能看到
+                    val fallback = cleanStepText(a.optString("text")).take(80)
+                    val keys = STEP_ARGS[code] ?: (if (fallback.isNotEmpty() && code.matches(Regex("^[a-z0-9_]{1,40}$"))) emptyList() else return ok(false))
                     val src = a.optJSONObject("args") ?: JSONObject()
                     val args = JSONObject()
                     for (k in keys) {
@@ -346,7 +348,7 @@ const ctx = Object.freeze({
                             else -> {}
                         }
                     }
-                    val line = JSONObject().put("c", code).put("a", args).toString()
+                    val line = JSONObject().put("c", code).put("a", args).apply { if (fallback.isNotEmpty()) put("t", fallback) }.toString()
                     if (line == lastStep || stepCount >= MAX_STEPS) return ok(false) // no repeats, at most 300 per run
                     // About one line per second: wait out the rest of the second instead of dropping the line.
                     val wait = 1000L - (System.currentTimeMillis() - lastStepAt)

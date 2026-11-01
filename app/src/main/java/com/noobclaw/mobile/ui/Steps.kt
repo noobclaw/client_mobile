@@ -12,7 +12,8 @@ import org.json.JSONObject
 object Steps {
     fun text(msg: String): String? {
         val j = runCatching { JSONObject(msg) }.getOrNull() ?: return null
-        return text(j.optString("c"), j.optJSONObject("a") ?: JSONObject())
+        // 認識的代號按界面語言翻譯;不認識的用劇本帶來的兜底文字
+        return text(j.optString("c"), j.optJSONObject("a") ?: JSONObject()) ?: j.optString("t").trim().takeIf { it.isNotEmpty() }
     }
 
     fun text(code: String, a: JSONObject): String? {

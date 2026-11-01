@@ -174,6 +174,12 @@ object Prefs {
         sp.edit().putString(K_STATS, all.toString()).apply()
     }
 
+    /** Feature switches from the server (heartbeat `flags`): dev_bubble, dry_run … Off when missing. */
+    var flagsJson: String
+        get() = sp.getString("mobile_flags", "{}") ?: "{}"
+        set(v) { sp.edit().putString("mobile_flags", v).apply() }
+    fun flag(name: String): Boolean = runCatching { org.json.JSONObject(flagsJson).optBoolean(name, false) }.getOrDefault(false)
+
     fun logout() {
         sp.edit().remove(K_TOKEN).remove(K_WALLET).remove(K_TASK).remove(K_TASKS).remove(K_BINDING).remove(K_OVER).remove(K_PHONE_LIMIT).remove(K_ACCOUNT).remove(K_STATS).remove(K_RUNS).remove(K_HIDDEN).apply()
     }

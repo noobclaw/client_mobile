@@ -145,6 +145,11 @@ class RunService : Service() {
         Prefs.overLimit = r.optBoolean("over_limit", false)
         Prefs.phoneLimit = r.optInt("phone_limit", 0)
         // 電腦端改 / 刪了任務(服務器的任務列表時間變了)→ 馬上重新拉,不等每分鐘那次
+        // 功能開關:「抓」校準按鈕等,後台改了下次心跳生效
+        r.optJSONObject("flags")?.let { f ->
+            Prefs.flagsJson = f.toString()
+            NcAccessibilityService.instance?.applyDevBubble(f.optBoolean("dev_bubble", false))
+        }
         val tasksAt = r.optLong("tasks_at", 0L)
         if (tasksAt > 0 && tasksAt != lastTasksAt) { lastTasksAt = tasksAt; refreshTasks() }
         // Run / stop requests sent from the desktop app ("我的手機").

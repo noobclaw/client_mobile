@@ -19,11 +19,19 @@ class NcAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         instance = this
         RunLog.i(com.noobclaw.mobile.util.tr("無障礙服務已連接", "Accessibility service connected"))
-        // 「抓」校准悬浮钮不再显示(用户装的就是 debug 包,会看到它);需要校准时临时打开这一行
-        // if (com.noobclaw.mobile.BuildConfig.DEBUG) showDevBubble()
+        // 「抓」校準懸浮鈕:默認不顯示,後台功能開關 dev_bubble 給這台手機打開時才有
+        applyDevBubble(com.noobclaw.mobile.util.Prefs.flag("dev_bubble"))
     }
 
     private var bubble: android.view.View? = null
+
+    /** Shows / hides the calibration bubble (server flag dev_bubble). Safe from any thread. */
+    fun applyDevBubble(on: Boolean) {
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+            if (on) showDevBubble()
+            else bubble?.let { b -> runCatching { getSystemService(android.view.WindowManager::class.java).removeView(b) }; bubble = null }
+        }
+    }
 
     /**
      * Debug builds only: a small "抓" bubble drawn on the accessibility overlay layer. Tapping it uploads the
