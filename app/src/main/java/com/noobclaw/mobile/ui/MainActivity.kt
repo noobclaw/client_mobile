@@ -1208,7 +1208,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun newTask() {
         if (taskFor(currentTab()) != null) { toast(tr("每個平台只能建 1 個任務", "One task per platform")); return }
-        draft = JSONObject().put("script_id", CL).put("schedule", JSONObject().put("kind", "every").put("hours", 3))
+        draft = JSONObject().put("script_id", CL).put("schedule", Schedule.toJson(Schedule.Kind.Daily(LocalTime.of(9, 30)))) // 新建默認每天定時
         configBack = Screen.HOME
         go(Screen.CONFIG)
     }
