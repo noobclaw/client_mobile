@@ -220,7 +220,7 @@ object FloatBall {
         if (run && popupKind != "menu") {
             val lp = RunService.liveProgress()
             val c = lp?.optJSONObject("counts") ?: JSONObject()
-            p.text = "👍 ${c.optLong("like")}  💬 ${c.optLong("comment")} · ${elapsed()}"
+            p.text = countsLine(c, lp?.optJSONObject("targets"), taskById(RunService.runningTaskId), withCap = false, sep = "  ") + " · ${elapsed()}"
             p.visibility = View.VISIBLE
         } else p.visibility = View.GONE
         if (popupKind == "progress") fillProgress()
@@ -374,6 +374,22 @@ object FloatBall {
         col.addView(r, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) })
     }
 
+    /**
+     * "👍 12/1000 · 💬 3/300" — only the actions the task does: a switched-off action (reply off, like off) is left out.
+     * The run's targets decide first (0 = not doing it); before the script sets them, the task config does.
+     */
+    private fun countsLine(c: JSONObject, targets: JSONObject?, task: JSONObject?, withCap: Boolean, sep: String = "  ·  "): String {
+        val cfg = task?.optJSONObject("config")
+        fun on(k: String, cfgKey: String): Boolean =
+            if (targets != null && targets.has(k)) targets.optLong(k) > 0 || c.optLong(k) > 0
+            else cfg?.optBoolean(cfgKey, true) ?: true
+        fun cap(k: String) = if (withCap) targets?.optLong(k)?.takeIf { it > 0 }?.let { "/$it" } ?: "" else ""
+        val parts = mutableListOf<String>()
+        if (on("like", "cl_do_like")) parts += "👍 ${c.optLong("like")}${cap("like")}"
+        if (on("comment", "cl_do_reply")) parts += "💬 ${c.optLong("comment")}${cap("comment")}"
+        return parts.joinToString(sep).ifEmpty { "👍 0" }
+    }
+
     private fun taskTitle(t: JSONObject?): String {
         if (t == null) return "TikTok"
         val p = platformName(Prefs.platformOf(t))
@@ -396,9 +412,8 @@ object FloatBall {
         val p = RunService.liveProgress() ?: JSONObject()
         val c = p.optJSONObject("counts") ?: JSONObject()
         val t = p.optJSONObject("targets") ?: JSONObject()
-        fun cap(k: String) = t.optLong(k).takeIf { it > 0 }?.let { "/$it" } ?: ""
         header(col, taskTitle(taskById(RunService.runningTaskId)), "● " + tr("運行中 ", "Running ") + elapsed(), Color.parseColor("#00FF88"))
-        kv(col, tr("進度", "Progress"), "👍 ${c.optLong("like")}${cap("like")}  ·  💬 ${c.optLong("comment")}${cap("comment")}")
+        kv(col, tr("進度", "Progress"), countsLine(c, t, taskById(RunService.runningTaskId), withCap = true))
         kv(col, tr("消耗", "Cost"), "💎 " + String.format(java.util.Locale.US, "%,d", p.optLong("credits")))
         steps(col, RunService.runningRunId, 3)
         buttons(col,
@@ -429,7 +444,7 @@ object FloatBall {
         kv(col, tr("時間", "When"), fmt.format(java.util.Date(r.optLong("started_at"))) + " · " +
             tr("用時 ${dur / 60} 分 ${dur % 60} 秒", "${dur / 60}m ${dur % 60}s"))
         val c = r.optJSONObject("counts") ?: JSONObject()
-        kv(col, tr("完成", "Done"), "👍 ${c.optLong("like")}  ·  💬 ${c.optLong("comment")}")
+        kv(col, tr("完成", "Done"), countsLine(c, null, t, withCap = false))
         kv(col, tr("消耗", "Cost"), "💎 " + String.format(java.util.Locale.US, "%,d", r.optLong("credits")))
         if (st != "done" && r.optString("reason").isNotEmpty()) kv(col, tr("原因", "Reason"), reasonText(r.optString("reason")))
         if (t != null) {
