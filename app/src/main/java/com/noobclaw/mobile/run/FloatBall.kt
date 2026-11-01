@@ -56,7 +56,8 @@ object FloatBall {
     private var pill: TextView? = null
     private var popup: FrameLayout? = null         // menu / card layer (full screen)
     private var popupLp: WindowManager.LayoutParams? = null
-    private var progressDetect = false
+    private var runWasDetect = false
+    private var lastRunId: String? = null   // 只弹这一次的结果(被拒 / 跳过的运行没有记录,不弹旧的)
     private var liveBox: LinearLayout? = null      // progress card: the part refreshed every second (buttons stay put)
     private var popupKind = ""                     // "menu" | "progress" | "last" | "pick"
     private var cardBody: LinearLayout? = null
@@ -247,6 +248,7 @@ object FloatBall {
 
     private fun refresh() {
         val run = running()
+        if (run) { runWasDetect = RunService.runningTaskId == "detect"; lastRunId = RunService.runningRunId }
         val b = ballBox ?: return
         if (run != lastRunning) {
             lastRunning = run
@@ -256,7 +258,8 @@ object FloatBall {
                 duration = 1200; repeatMode = ValueAnimator.REVERSE; repeatCount = ValueAnimator.INFINITE; start()
             }
             b.alpha = if (run) 1f else 0.8f
-            if (!run && popupKind == "progress") { if (progressDetect) closePopup() else openLast() }   // run ended while the card was open → show its result
+            // 运行结束:正式任务自动弹出这次的结果;检测账号不弹(RunService 自己提示并回到 App)
+            if (!run) { if (runWasDetect) { if (popupKind == "progress") closePopup() } else if (popupKind != "pick" && Prefs.runHistory().firstOrNull()?.optString("run_id") == lastRunId) openLast() else if (popupKind == "progress") closePopup() }   // run ended while the card was open → show its result
         }
         val p = pill ?: return
         if (run && popupKind != "menu") {
@@ -458,7 +461,6 @@ object FloatBall {
         if (!running()) { openLast(); return }
         val col = card("progress") ?: return
         val c = app ?: return
-        progressDetect = RunService.runningTaskId == "detect"   // 检测账号不记运行记录,结束时别弹「上次结果」
         val box = LinearLayout(c).apply { orientation = LinearLayout.VERTICAL }
         col.addView(box)
         liveBox = box
