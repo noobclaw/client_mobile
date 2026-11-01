@@ -24,7 +24,7 @@ private val STEP_ARGS: Map<String, List<String>> = mapOf(
     "collect_leads" to emptyList(), "leads_found" to listOf("n"), "reach_leads" to emptyList(), "reach_lead" to emptyList(),
     "lead_liked" to emptyList(), "lead_commented" to listOf("text"), "lead_followed" to emptyList(), "done" to emptyList(),
     "cap_reached" to emptyList(), "time_up" to emptyList(), "not_logged_in" to emptyList(), "verify_stop" to emptyList(),
-    "stopped" to emptyList(), "stopped_other" to emptyList(),
+    "stopped" to emptyList(), "stopped_other" to emptyList(), "liked" to emptyList(), "commented" to listOf("text"),
 )
 private const val MAX_STEPS = 300
 
