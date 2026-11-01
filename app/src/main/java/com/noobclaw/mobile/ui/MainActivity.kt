@@ -1397,24 +1397,29 @@ class MainActivity : AppCompatActivity() {
             val actBox = ui.col()
             fun drawActs() {
                 actBox.removeAllViews()
-                fun action(on: Boolean, title: String, onKey: String, nKey: String, gKey: String, gHint: String) {
+                // 和电脑端一样一行说清楚:「最多 [ 不限 ] 次 · 間隔 [ 1 ] 秒」,输入框只要放得下几位数字
+                fun action(on: Boolean, title: String, onKey: String, nKey: String, gKey: String, unit: String, gDefault: String) {
                     actBox.addView(switchRow(title, on) { d.put(onKey, !on); render() }, ui.lp(bottom = 8))
                     if (!on) return
-                    val r = ui.row()
-                    val n = ui.input(tr("最多(留空=不限)", "Max (empty = no limit)"), d.optString(nKey), number = true).apply { textSize = 14f }
-                    val g = ui.input(gHint, d.optString(gKey), number = true).apply { textSize = 14f }
-                    watch(n, nKey); watch(g, gKey)
-                    r.addView(n, ui.weight().apply { marginEnd = ui.dp(8) })
-                    r.addView(g, ui.weight())
-                    actBox.addView(r, ui.lp(bottom = 12))
+                    fun box(hint: String, key: String) = ui.input(hint, d.optString(key), number = true).apply {
+                        textSize = 14f; gravity = Gravity.CENTER; setPadding(ui.dp(6), ui.dp(7), ui.dp(6), ui.dp(7)); watch(this, key)
+                    }
+                    val r = ui.row().apply { gravity = Gravity.CENTER_VERTICAL; setPadding(ui.dp(4), 0, 0, 0) }
+                    fun word(t: String) = ui.text(t, 13f, C.SUB).apply { setPadding(ui.dp(6), 0, ui.dp(6), 0) }
+                    r.addView(word(tr("最多", "Max")).apply { setPadding(0, 0, ui.dp(6), 0) })
+                    r.addView(box(tr("不限", "No limit"), nKey), LinearLayout.LayoutParams(ui.dp(76), ViewGroup.LayoutParams.WRAP_CONTENT))
+                    r.addView(word(unit + " · " + tr("間隔", "gap")))
+                    r.addView(box(gDefault, gKey), LinearLayout.LayoutParams(ui.dp(60), ViewGroup.LayoutParams.WRAP_CONTENT))
+                    r.addView(word(tr("秒", "s")))
+                    actBox.addView(r, ui.lp(bottom = 14))
                 }
-                action(d.optBoolean("_doLike"), tr("點讚評論", "Like comments"), "_doLike", "_nLike", "_gLike", tr("間隔秒數(默認 1)", "Gap sec (default 1)"))
-                action(d.optBoolean("_doReply"), tr("回覆評論", "Reply to comments"), "_doReply", "_nReply", "_gReply", tr("間隔秒數(默認 30)", "Gap sec (default 30)"))
+                action(d.optBoolean("_doLike"), tr("點讚評論", "Like comments"), "_doLike", "_nLike", "_gLike", tr("次", "likes"), "1")
+                action(d.optBoolean("_doReply"), tr("回覆評論", "Reply to comments"), "_doReply", "_nReply", "_gReply", tr("條", "replies"), "30")
             }
             drawActs()
             add(actBox)
-            add(ui.sub(tr("最多留空 = 不限,有多少做多少;間隔 = 做完一個等幾秒再做下一個",
-                "Empty max = no limit. Gap = seconds between actions")), bottom = 20)
+            add(ui.sub(tr("最多留空 = 不限,有多少做多少;間隔 = 做完一個等幾秒再做下一個,留空用默認(點讚 1 秒、評論 30 秒)",
+                "Empty max = no limit. Gap = seconds between actions; empty uses the default (likes 1 s, replies 30 s)")), bottom = 20)
 
             if (d.optBoolean("_doReply")) {
                 sec = "cmt"
