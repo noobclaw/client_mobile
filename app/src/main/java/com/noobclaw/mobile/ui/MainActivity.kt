@@ -865,7 +865,7 @@ class MainActivity : AppCompatActivity() {
         val tg = live.optJSONObject("targets") ?: JSONObject()
         val box = ui.col().apply { setPadding(ui.dp(12), ui.dp(8), ui.dp(12), ui.dp(10)) }
         val items = progressItems(sid).filter { tg.optLong(it.key) > 0 || c.optLong(it.key) > 0 }
-            .joinToString("   ") { "${it.icon} ${fmtNum(c.optLong(it.key))}/${fmtNum(tg.optLong(it.key))}" }.ifEmpty { "—" }
+            .joinToString("   ") { val t = tg.optLong(it.key); "${it.icon} ${fmtNum(c.optLong(it.key))}" + (if (t in 1 until 100_000_000) "/${fmtNum(t)}" else "") }.ifEmpty { "—" }
         fun line(k: String, v: String) = ui.row().apply {
             setPadding(0, ui.dp(2), 0, ui.dp(2))
             addView(ui.text(k, if (big) 13f else 12f, C.ACCENT, true).apply { setPadding(0, 0, ui.dp(12), 0) })
