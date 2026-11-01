@@ -268,8 +268,8 @@ class MainActivity : AppCompatActivity() {
         nav.visibility = if (show) View.VISIBLE else View.GONE
         if (!show) return
         listOf(
-            Triple(Screen.HOME, "▦", tr("任務", "Tasks")),
-            Triple(Screen.ME, "◉", tr("我的", "Me")),
+            Triple(Screen.HOME, com.noobclaw.mobile.R.drawable.ic_nav_tasks, tr("任務", "Tasks")),
+            Triple(Screen.ME, com.noobclaw.mobile.R.drawable.ic_nav_me, tr("我的", "Me")),
         ).forEach { (s, icon, label) ->
             val on = screen == s
             val item = ui.col().apply {
@@ -278,8 +278,12 @@ class MainActivity : AppCompatActivity() {
                 isClickable = true
                 setOnClickListener { if (screen != s) go(s) }
             }
-            item.addView(ui.text(icon, 18f, if (on) C.ON_ACCENT else C.SUB, true).apply {
-                gravity = Gravity.CENTER
+            // 矢量圖標(清單 / 人像),選中時綠底膠囊
+            item.addView(android.widget.ImageView(this).apply {
+                setImageResource(icon)
+                imageTintList = android.content.res.ColorStateList.valueOf(if (on) C.ON_ACCENT else C.SUB)
+                scaleType = android.widget.ImageView.ScaleType.CENTER_INSIDE
+                setPadding(0, ui.dp(5), 0, ui.dp(5))
                 if (on) background = ui.shape(C.ACCENT, 16)
             }, LinearLayout.LayoutParams(ui.dp(56), ui.dp(30)).apply { bottomMargin = ui.dp(4) })
             item.addView(ui.text(label, 12f, if (on) C.ACCENT else C.SUB, on).apply { gravity = Gravity.CENTER })
