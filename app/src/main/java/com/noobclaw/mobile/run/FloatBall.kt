@@ -259,6 +259,7 @@ object FloatBall {
             }
             b.alpha = if (run) 1f else 0.8f
             // 运行结束:正式任务自动弹出这次的结果;检测账号不弹(RunService 自己提示并回到 App)
+            if (run && (popupKind == "last" || popupKind == "menu")) closePopup()   // 新的运行开始了:上一次的结果卡片 / 旧菜单收起来
             if (!run) { if (runWasDetect) { if (popupKind == "progress") closePopup() } else if (popupKind != "pick" && Prefs.runHistory().firstOrNull()?.optString("run_id") == lastRunId) openLast() else if (popupKind == "progress") closePopup() }   // run ended while the card was open → show its result
         }
         val p = pill ?: return
