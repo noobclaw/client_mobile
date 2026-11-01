@@ -42,6 +42,7 @@ class RunService : Service() {
     @Volatile private var captureJob: Job? = null
     @Volatile private var engine: ScriptEngine? = null
     @Volatile private var notifJob: Job? = null
+    @Volatile private var lastTasksAt = 0L          // 服務器任務列表的最後修改時間(心跳帶回)
     private val lastTry = HashMap<String, Long>() // every-N tasks: last time the scheduler tried to start them
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -143,6 +144,9 @@ class RunService : Service() {
         // 會員可用手機數:超出的手機不跑任務(服務器也不下發劇本)。
         Prefs.overLimit = r.optBoolean("over_limit", false)
         Prefs.phoneLimit = r.optInt("phone_limit", 0)
+        // 電腦端改 / 刪了任務(服務器的任務列表時間變了)→ 馬上重新拉,不等每分鐘那次
+        val tasksAt = r.optLong("tasks_at", 0L)
+        if (tasksAt > 0 && tasksAt != lastTasksAt) { lastTasksAt = tasksAt; refreshTasks() }
         // Run / stop requests sent from the desktop app ("我的手機").
         val cmds = r.optJSONArray("commands") ?: return
         for (i in 0 until cmds.length()) {
