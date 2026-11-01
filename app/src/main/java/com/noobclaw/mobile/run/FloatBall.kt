@@ -1,0 +1,495 @@
+package com.noobclaw.mobile.run
+
+import android.animation.ObjectAnimator
+import android.animation.ValueAnimator
+import android.annotation.SuppressLint
+import android.content.Context
+import android.content.Intent
+import android.graphics.Color
+import android.graphics.PixelFormat
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
+import android.os.Handler
+import android.os.Looper
+import android.provider.Settings
+import android.view.Gravity
+import android.view.MotionEvent
+import android.view.View
+import android.view.ViewConfiguration
+import android.view.ViewGroup
+import android.view.WindowManager
+import android.widget.FrameLayout
+import android.widget.ImageView
+import android.widget.LinearLayout
+import android.widget.TextView
+import android.widget.Toast
+import com.noobclaw.mobile.R
+import com.noobclaw.mobile.a11y.NcAccessibilityService
+import com.noobclaw.mobile.ui.MainActivity
+import com.noobclaw.mobile.ui.Steps
+import com.noobclaw.mobile.util.Prefs
+import com.noobclaw.mobile.util.RunLog
+import com.noobclaw.mobile.util.tr
+import org.json.JSONObject
+import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.sin
+
+/**
+ * NoobClaw floating ball (2026-11-01). Shown while the app process is alive (needs the overlay permission):
+ *   tap → fan menu. Idle: 啟動 / 上次結果 / 回到 NoobClaw. Running: 停止 / 進度.
+ *   While running: green ring + a capsule next to the ball (likes · replies · elapsed); tap it for the progress card.
+ * Draggable; snaps to the left / right edge; the position is remembered.
+ * All window work happens on the main thread.
+ */
+@SuppressLint("StaticFieldLeak")
+object FloatBall {
+    private val main = Handler(Looper.getMainLooper())
+    private var app: Context? = null
+    private var wm: WindowManager? = null
+
+    private var bar: LinearLayout? = null          // [capsule][ball] (right side) or [ball][capsule] (left side)
+    private var barLp: WindowManager.LayoutParams? = null
+    private var ballBox: FrameLayout? = null
+    private var ring: View? = null
+    private var ringAnim: ObjectAnimator? = null
+    private var pill: TextView? = null
+    private var popup: FrameLayout? = null         // menu / card layer (full screen)
+    private var popupKind = ""                     // "menu" | "progress" | "last" | "pick"
+    private var cardBody: LinearLayout? = null
+    private var passThrough = false
+
+    private var right = true                       // which edge the ball sits on
+    private var lastRunning = false
+
+    private fun dp(v: Int): Int = (v * (app?.resources?.displayMetrics?.density ?: 2f)).toInt()
+    private val screenW get() = app?.resources?.displayMetrics?.widthPixels ?: 1080
+    private val screenH get() = app?.resources?.displayMetrics?.heightPixels ?: 1920
+    private fun prefs() = app?.getSharedPreferences("nc_mobile", Context.MODE_PRIVATE)
+
+    // ---------------- public ----------------
+
+    /** Shows the ball (no-op without the overlay permission, or when already shown). */
+    fun show(ctx: Context) = main.post {
+        val c = ctx.applicationContext
+        app = c
+        if (bar != null || !Settings.canDrawOverlays(c) || Prefs.token.isEmpty()) return@post   // 沒登錄不顯示
+        wm = c.getSystemService(WindowManager::class.java)
+        right = prefs()?.getBoolean("fb_right", true) ?: true
+        buildBar()
+        main.post(ticker)
+    }
+
+    fun hide() = main.post {
+        main.removeCallbacks(ticker)
+        closePopup()
+        ringAnim?.cancel(); ringAnim = null
+        bar?.let { b -> runCatching { wm?.removeView(b) } }
+        bar = null; barLp = null; ballBox = null; ring = null; pill = null
+    }
+
+    /**
+     * While the script dispatches a gesture, our windows must not catch it (the ball sits on TikTok's right
+     * edge, where the like / comment buttons are): make them untouchable, then restore. Safe from any thread.
+     */
+    fun setPassThrough(on: Boolean) {
+        val r = Runnable {
+            if (passThrough == on) return@Runnable
+            passThrough = on
+            val b = bar ?: return@Runnable
+            val lp = barLp ?: return@Runnable
+            lp.flags = if (on) lp.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE else lp.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+            runCatching { wm?.updateViewLayout(b, lp) }
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) r.run() else main.post(r)
+    }
+
+    // ---------------- ball + capsule ----------------
+
+    private val ticker = object : Runnable {
+        override fun run() {
+            refresh()
+            main.postDelayed(this, 1000)
+        }
+    }
+
+    private fun running() = RunService.runningRunId != null
+
+    private fun buildBar() {
+        val c = app ?: return
+        val box = FrameLayout(c)
+        val rg = View(c).apply {
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setStroke(dp(3), Color.parseColor("#00FF88")); setColor(Color.TRANSPARENT) }
+            visibility = View.GONE
+        }
+        box.addView(rg, FrameLayout.LayoutParams(dp(52), dp(52), Gravity.CENTER))
+        val white = FrameLayout(c).apply {
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.WHITE) }
+            elevation = dp(4).toFloat()
+        }
+        white.addView(ImageView(c).apply { setImageResource(R.mipmap.ic_launcher_round); scaleType = ImageView.ScaleType.FIT_CENTER },
+            FrameLayout.LayoutParams(dp(30), dp(30), Gravity.CENTER))
+        box.addView(white, FrameLayout.LayoutParams(dp(44), dp(44), Gravity.CENTER))
+
+        val p = TextView(c).apply {
+            setTextColor(Color.WHITE); textSize = 11f; typeface = Typeface.DEFAULT_BOLD
+            setPadding(dp(10), dp(5), dp(10), dp(5))
+            background = GradientDrawable().apply { cornerRadius = dp(14).toFloat(); setColor(Color.parseColor("#E60A0C14")); setStroke(dp(1), Color.parseColor("#7300FF88")) }
+            visibility = View.GONE
+            setOnClickListener { openProgress() }
+        }
+        val row = LinearLayout(c).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        ballBox = box; ring = rg; pill = p; bar = row
+        arrangeRow()
+
+        val lp = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT,
+        ).apply {
+            gravity = Gravity.TOP or (if (right) Gravity.END else Gravity.START)
+            x = dp(2)
+            y = (prefs()?.getInt("fb_y", -1) ?: -1).takeIf { it >= 0 } ?: (screenH * 0.38).toInt()
+        }
+        barLp = lp
+        attachDrag(box)
+        runCatching { wm?.addView(row, lp) }.onFailure { bar = null; barLp = null; RunLog.w("懸浮球顯示失敗：${it.message}") }
+        refresh()
+    }
+
+    private fun arrangeRow() {
+        val row = bar ?: return
+        val box = ballBox ?: return
+        val p = pill ?: return
+        row.removeAllViews()
+        val gap = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            if (right) marginEnd = dp(4) else marginStart = dp(4)
+        }
+        if (right) { row.addView(p, gap); row.addView(box) } else { row.addView(box); row.addView(p, gap) }
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun attachDrag(v: View) {
+        val slop = ViewConfiguration.get(v.context).scaledTouchSlop
+        var downX = 0f; var downY = 0f; var startY = 0; var dragging = false
+        v.setOnTouchListener { _, e ->
+            val lp = barLp ?: return@setOnTouchListener false
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> { downX = e.rawX; downY = e.rawY; startY = lp.y; dragging = false; true }
+                MotionEvent.ACTION_MOVE -> {
+                    if (!dragging && (abs(e.rawX - downX) > slop || abs(e.rawY - downY) > slop)) { dragging = true; closePopup() }
+                    if (dragging) {
+                        lp.gravity = Gravity.TOP or Gravity.START
+                        lp.x = (e.rawX - dp(26)).toInt().coerceIn(0, screenW - dp(52))
+                        lp.y = (startY + (e.rawY - downY)).toInt().coerceIn(0, screenH - dp(60))
+                        runCatching { wm?.updateViewLayout(bar, lp) }
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (dragging) {
+                        right = e.rawX > screenW / 2f
+                        lp.gravity = Gravity.TOP or (if (right) Gravity.END else Gravity.START)
+                        lp.x = dp(2)
+                        arrangeRow()
+                        runCatching { wm?.updateViewLayout(bar, lp) }
+                        prefs()?.edit()?.putBoolean("fb_right", right)?.putInt("fb_y", lp.y)?.apply()
+                    } else if (e.actionMasked == MotionEvent.ACTION_UP) openMenu()
+                    true
+                }
+                else -> false
+            }
+        }
+    }
+
+    private fun refresh() {
+        val run = running()
+        val b = ballBox ?: return
+        if (run != lastRunning) {
+            lastRunning = run
+            ring?.visibility = if (run) View.VISIBLE else View.GONE
+            ringAnim?.cancel(); ringAnim = null
+            if (run) ringAnim = ObjectAnimator.ofFloat(ring, "alpha", 1f, 0.35f).apply {
+                duration = 1200; repeatMode = ValueAnimator.REVERSE; repeatCount = ValueAnimator.INFINITE; start()
+            }
+            b.alpha = if (run) 1f else 0.8f
+            if (!run && popupKind == "progress") openLast()   // run ended while the card was open → show its result
+        }
+        val p = pill ?: return
+        if (run && popupKind != "menu") {
+            val lp = RunService.liveProgress()
+            val c = lp?.optJSONObject("counts") ?: JSONObject()
+            p.text = "👍 ${c.optLong("like")}  💬 ${c.optLong("comment")} · ${elapsed()}"
+            p.visibility = View.VISIBLE
+        } else p.visibility = View.GONE
+        if (popupKind == "progress") fillProgress()
+    }
+
+    private fun elapsed(): String {
+        val s = ((System.currentTimeMillis() - RunService.runStartedAt) / 1000).coerceAtLeast(0)
+        return if (s >= 3600) String.format(java.util.Locale.US, "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60)
+        else String.format(java.util.Locale.US, "%02d:%02d", s / 60, s % 60)
+    }
+
+    /** Centre of the ball on screen. */
+    private fun ballCenter(): Pair<Int, Int> {
+        val lp = barLp
+        val y = (lp?.y ?: 0) + dp(26)
+        val x = if (right) screenW - dp(2) - dp(26) else dp(2) + dp(26)
+        return x to y
+    }
+
+    // ---------------- popups ----------------
+
+    private fun closePopup() {
+        popup?.let { v -> runCatching { wm?.removeView(v) } }
+        popup = null; popupKind = ""; cardBody = null
+        refresh()
+    }
+
+    private fun newPopup(kind: String, dim: Boolean): FrameLayout? {
+        val c = app ?: return null
+        closePopup()
+        val layer = FrameLayout(c).apply {
+            setBackgroundColor(if (dim) Color.parseColor("#73000000") else Color.TRANSPARENT)
+            setOnClickListener { closePopup() }
+        }
+        val lp = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT,
+        ).apply { gravity = Gravity.TOP or Gravity.START }
+        if (runCatching { wm?.addView(layer, lp) }.isFailure) return null
+        popup = layer; popupKind = kind
+        // keep the ball above the layer
+        bar?.let { b -> barLp?.let { l -> runCatching { wm?.removeView(b); wm?.addView(b, l) } } }
+        return layer
+    }
+
+    private fun openMenu() {
+        if (popupKind == "menu") { closePopup(); return }
+        val c = app ?: return
+        val layer = newPopup("menu", dim = true) ?: return
+        refresh()
+        val items: List<Triple<String, String, () -> Unit>> = if (running()) listOf(
+            Triple("■", tr("停止", "Stop")) { closePopup(); RunService.start(c, RunService.ACTION_STOP_RUN); toast(tr("正在停止…", "Stopping…")) },
+            Triple("📊", tr("進度", "Progress")) { openProgress() },
+        ) else listOf(
+            Triple("▶", tr("啟動", "Start")) { startFlow() },
+            Triple("📊", tr("上次結果", "Last run")) { openLast() },
+            Triple("🏠", tr("回到 NoobClaw", "Open NoobClaw")) { closePopup(); openApp() },
+        )
+        val (cx, cy) = ballCenter()
+        val radius = dp(88)
+        val angles = if (items.size == 2) listOf(-30.0, 30.0) else listOf(-55.0, 0.0, 55.0)
+        items.forEachIndexed { i, (icon, label, act) ->
+            val a = Math.toRadians(angles[i])
+            val dx = (cos(a) * radius).toInt() * (if (right) -1 else 1)
+            val dy = (sin(a) * radius).toInt()
+            val red = icon == "■"; val green = icon == "▶"
+            val item = LinearLayout(c).apply {
+                orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL
+                setOnClickListener { act() }
+            }
+            item.addView(TextView(c).apply {
+                text = icon; textSize = 17f; gravity = Gravity.CENTER; setTextColor(Color.WHITE)
+                background = GradientDrawable().apply { shape = GradientDrawable.OVAL
+                    setColor(Color.parseColor(if (red) "#E5484D" else if (green) "#00C46A" else "#3A4260")) }
+                elevation = dp(4).toFloat()
+            }, LinearLayout.LayoutParams(dp(46), dp(46)))
+            item.addView(TextView(c).apply {
+                text = label; textSize = 11f; typeface = Typeface.DEFAULT_BOLD; setTextColor(Color.WHITE)
+                setShadowLayer(4f, 0f, 1f, Color.BLACK); gravity = Gravity.CENTER
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(3) })
+            val w = dp(96)
+            layer.addView(item, FrameLayout.LayoutParams(w, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                gravity = Gravity.TOP or Gravity.START
+                leftMargin = (cx + dx - w / 2).coerceIn(0, screenW - w)
+                topMargin = (cy + dy - dp(23)).coerceIn(0, screenH - dp(80))
+            })
+        }
+    }
+
+    /** Card under (or above) the ball; returns the card's content column. */
+    private fun card(kind: String): LinearLayout? {
+        val c = app ?: return null
+        val layer = newPopup(kind, dim = true) ?: return null
+        val (_, cy) = ballCenter()
+        val col = LinearLayout(c).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            background = GradientDrawable().apply { cornerRadius = dp(16).toFloat(); setColor(Color.parseColor("#F50E0F18")); setStroke(dp(1), Color.parseColor("#6600FF88")) }
+            isClickable = true   // taps inside the card don't close it
+        }
+        val below = cy < screenH / 2
+        layer.addView(col, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            gravity = if (below) Gravity.TOP else Gravity.BOTTOM
+            leftMargin = dp(12); rightMargin = dp(12)
+            if (below) topMargin = cy + dp(34) else bottomMargin = (screenH - cy + dp(34)).coerceAtLeast(dp(12))
+        })
+        cardBody = col
+        return col
+    }
+
+    private fun txt(s: CharSequence, size: Float = 12f, color: Int = Color.parseColor("#ECECF5"), bold: Boolean = false) =
+        TextView(app).apply { text = s; textSize = size; setTextColor(color); if (bold) typeface = Typeface.DEFAULT_BOLD }
+
+    private fun header(col: LinearLayout, title: String, tag: String, tagColor: Int) {
+        val r = LinearLayout(app).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        r.addView(txt(title, 13f, bold = true), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        r.addView(txt(tag, 11f, tagColor, true))
+        col.addView(r, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(8) })
+    }
+
+    private fun kv(col: LinearLayout, k: String, v: CharSequence) {
+        val r = LinearLayout(app).apply { orientation = LinearLayout.HORIZONTAL }
+        r.addView(txt(k, 12f, Color.parseColor("#9A9AB3")), LinearLayout.LayoutParams(dp(46), ViewGroup.LayoutParams.WRAP_CONTENT))
+        r.addView(txt(v, 12f), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        col.addView(r, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(4) })
+    }
+
+    private fun steps(col: LinearLayout, runId: String?, n: Int) {
+        if (runId.isNullOrEmpty()) return
+        val lines = RunLog.recent().filter { it.runId == runId && it.level == "step" }.mapNotNull { l -> Steps.text(l.msg)?.let { l.ts to it } }.takeLast(n)
+        if (lines.isEmpty()) return
+        col.addView(View(app).apply { setBackgroundColor(Color.parseColor("#2A2A3D")) }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 1).apply { topMargin = dp(4); bottomMargin = dp(6) })
+        val fmt = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US)
+        lines.forEach { (ts, s) ->
+            col.addView(txt(fmt.format(java.util.Date(ts)), 10f, Color.parseColor("#7C7C95")))
+            col.addView(txt(s, 12f, Color.parseColor("#B9B9CC")).apply { maxLines = 2 }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(4) })
+        }
+    }
+
+    private fun buttons(col: LinearLayout, vararg b: Triple<String, Int, () -> Unit>) {
+        val r = LinearLayout(app).apply { orientation = LinearLayout.HORIZONTAL }
+        b.forEachIndexed { i, (label, fill, act) ->
+            r.addView(txt(label, 13f, if (fill == Color.parseColor("#00FF88")) Color.parseColor("#04140C") else Color.WHITE, true).apply {
+                gravity = Gravity.CENTER; setPadding(0, dp(9), 0, dp(9))
+                background = GradientDrawable().apply { cornerRadius = dp(10).toFloat(); setColor(fill) }
+                setOnClickListener { act() }
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { if (i > 0) marginStart = dp(8) })
+        }
+        col.addView(r, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) })
+    }
+
+    private fun taskTitle(t: JSONObject?): String {
+        if (t == null) return "TikTok"
+        val p = platformName(Prefs.platformOf(t))
+        val name = t.optString("name").ifEmpty { if (t.optString("script_id") == "tiktok_lead_engage") tr("定向獲客任務", "Lead task") else tr("評論區點讚任務", "Comment-like task") }
+        return "$p · $name"
+    }
+    private fun platformName(id: String) = when (id) { "douyin" -> tr("抖音", "Douyin"); "xhs" -> tr("小紅書", "RedNote"); else -> "TikTok" }
+    private fun taskById(id: String?) = Prefs.tasks().firstOrNull { it.optString("id") == id }
+
+    private fun openProgress() {
+        if (!running()) { openLast(); return }
+        card("progress") ?: return
+        fillProgress()
+    }
+
+    private fun fillProgress() {
+        val col = cardBody ?: return
+        if (!running()) return
+        col.removeAllViews()
+        val p = RunService.liveProgress() ?: JSONObject()
+        val c = p.optJSONObject("counts") ?: JSONObject()
+        val t = p.optJSONObject("targets") ?: JSONObject()
+        fun cap(k: String) = t.optLong(k).takeIf { it > 0 }?.let { "/$it" } ?: ""
+        header(col, taskTitle(taskById(RunService.runningTaskId)), "● " + tr("運行中 ", "Running ") + elapsed(), Color.parseColor("#00FF88"))
+        kv(col, tr("進度", "Progress"), "👍 ${c.optLong("like")}${cap("like")}  ·  💬 ${c.optLong("comment")}${cap("comment")}")
+        kv(col, tr("消耗", "Cost"), "💎 " + String.format(java.util.Locale.US, "%,d", p.optLong("credits")))
+        steps(col, RunService.runningRunId, 3)
+        buttons(col,
+            Triple("■ " + tr("停止", "Stop"), Color.parseColor("#E5484D")) { closePopup(); app?.let { RunService.start(it, RunService.ACTION_STOP_RUN) }; toast(tr("正在停止…", "Stopping…")) },
+            Triple(tr("收起", "Close"), Color.parseColor("#262C40")) { closePopup() },
+        )
+    }
+
+    private fun openLast() {
+        val col = card("last") ?: return
+        val r = Prefs.runHistory().firstOrNull()
+        if (r == null) {
+            header(col, tr("上次結果", "Last run"), "", Color.WHITE)
+            col.addView(txt(tr("還沒有運行記錄", "No runs yet"), 12f, Color.parseColor("#9A9AB3")))
+            buttons(col, Triple(tr("關閉", "Close"), Color.parseColor("#262C40")) { closePopup() })
+            return
+        }
+        val t = taskById(r.optString("task_id"))
+        val st = r.optString("status")
+        val (tag, color) = when (st) {
+            "done" -> tr("✓ 已完成", "✓ Done") to Color.parseColor("#00FF88")
+            "stopped" -> tr("■ 已停止", "■ Stopped") to Color.parseColor("#F5A524")
+            else -> tr("✗ 失敗", "✗ Failed") to Color.parseColor("#FF5C7A")
+        }
+        header(col, tr("上次結果 · ", "Last run · ") + taskTitle(t), tag, color)
+        val fmt = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US)
+        val dur = r.optLong("duration_ms") / 1000
+        kv(col, tr("時間", "When"), fmt.format(java.util.Date(r.optLong("started_at"))) + " · " +
+            tr("用時 ${dur / 60} 分 ${dur % 60} 秒", "${dur / 60}m ${dur % 60}s"))
+        val c = r.optJSONObject("counts") ?: JSONObject()
+        kv(col, tr("完成", "Done"), "👍 ${c.optLong("like")}  ·  💬 ${c.optLong("comment")}")
+        kv(col, tr("消耗", "Cost"), "💎 " + String.format(java.util.Locale.US, "%,d", r.optLong("credits")))
+        if (st != "done" && r.optString("reason").isNotEmpty()) kv(col, tr("原因", "Reason"), reasonText(r.optString("reason")))
+        if (t != null) {
+            val next = Schedule.nextRunAt(t, Prefs.lastStart(t.optString("id")), app?.getSharedPreferences("nc_slots", Context.MODE_PRIVATE)?.getStringSet("done", emptySet()) ?: emptySet())
+            kv(col, tr("下次", "Next"), if (next == null) tr("手動運行", "Manual") else java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.US).format(java.util.Date(next)))
+        }
+        steps(col, r.optString("run_id"), 2)
+        val tid = r.optString("task_id")
+        buttons(col,
+            Triple("▶ " + tr("再跑一次", "Run again"), Color.parseColor("#00FF88")) { closePopup(); startTask(tid) },
+            Triple(tr("關閉", "Close"), Color.parseColor("#262C40")) { closePopup() },
+        )
+    }
+
+    private fun reasonText(r: String): String = when (r) {
+        "user_stopped" -> tr("手動停止", "Stopped by you")
+        "time", "time_up" -> tr("到達運行時長", "Time limit reached")
+        "caps_reached", "daily_cap" -> tr("到達數量上限", "Limit reached")
+        "not_logged_in" -> tr("TikTok 沒登錄", "TikTok not logged in")
+        "app_not_installed" -> tr("沒裝 TikTok", "TikTok not installed")
+        else -> r.take(60)
+    }
+
+    // ---------------- actions ----------------
+
+    private fun startFlow() {
+        val list = Prefs.primaryTasks().filter { Prefs.platformOf(it) !in Prefs.hiddenPlatforms }
+        when {
+            list.isEmpty() -> { closePopup(); toast(tr("還沒有任務，先在 NoobClaw 裡創建", "No task yet — create one in NoobClaw")); openApp() }
+            list.size == 1 -> { closePopup(); startTask(list[0].optString("id")) }
+            else -> {
+                val col = card("pick") ?: return
+                header(col, tr("啟動哪個平台的任務？", "Start which platform's task?"), "", Color.WHITE)
+                list.forEach { t ->
+                    col.addView(txt(taskTitle(t), 13f, bold = true).apply {
+                        setPadding(dp(12), dp(11), dp(12), dp(11))
+                        background = GradientDrawable().apply { cornerRadius = dp(12).toFloat(); setColor(Color.TRANSPARENT); setStroke(dp(1), Color.parseColor("#2A2A3D")) }
+                        setOnClickListener { closePopup(); startTask(t.optString("id")) }
+                    }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(8) })
+                }
+                buttons(col, Triple(tr("取消", "Cancel"), Color.parseColor("#262C40")) { closePopup() })
+            }
+        }
+    }
+
+    private fun startTask(id: String) {
+        val c = app ?: return
+        if (id.isEmpty() || taskById(id) == null) { toast(tr("任務不存在了", "That task no longer exists")); return }
+        if (Prefs.overLimit) { toast(tr("超出會員可用手機數，任務暫停", "Over your plan's phone limit")); return }
+        if (!NcAccessibilityService.isRunning) { toast(tr("請先在 NoobClaw 裡開啟權限", "Turn on the permissions in NoobClaw first")); openApp(); return }
+        RunService.start(c, RunService.ACTION_RUN_NOW, id)
+        toast(tr("已開始", "Started"))
+    }
+
+    private fun openApp() {
+        val c = app ?: return
+        runCatching {
+            c.startActivity(Intent(c, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
+        }
+    }
+
+    private fun toast(s: String) { app?.let { Toast.makeText(it, s, Toast.LENGTH_SHORT).show() } }
+}

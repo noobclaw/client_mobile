@@ -41,13 +41,14 @@ class RunService : Service() {
     @Volatile private var currentRun: Job? = null
     @Volatile private var captureJob: Job? = null
     @Volatile private var engine: ScriptEngine? = null
-    private var overlay: FloatingStop? = null
+    @Volatile private var notifJob: Job? = null
     private val lastTry = HashMap<String, Long>() // every-N tasks: last time the scheduler tried to start them
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startInForeground(getString(R.string.app_name) + " · " + tr("待命中", "Standing by"))
+        FloatBall.show(this)   // 懸浮球(App 進程在就一直在;沒有懸浮窗權限時不顯示)
         when (intent?.action) {
             ACTION_STOP_RUN -> {
                 if (currentRun?.isActive == true) stopCurrentRun("user_stopped")
@@ -70,7 +71,6 @@ class RunService : Service() {
 
     override fun onDestroy() {
         scope.cancel()
-        overlay?.hide()
         super.onDestroy()
     }
 
@@ -228,7 +228,15 @@ class RunService : Service() {
             val pack = ScriptLoader.load(task.optString("script_id", "tiktok_comment_like"), ver)
             report.put("script_version", pack.version)
             startInForeground(tr("運行中", "Running") + " · ${pack.id}")
-            overlay = FloatingStop(this) { startService(Intent(this, RunService::class.java).setAction(ACTION_STOP_RUN)) }.also { it.show() }
+            // 通知欄每 5 秒更新一次進度(懸浮球之外的另一個入口)
+            notifJob = scope.launch {
+                while (isActive) {
+                    delay(5000)
+                    val c = engine?.progress()?.optJSONObject("counts") ?: JSONObject()
+                    val s = (System.currentTimeMillis() - started) / 1000
+                    runCatching { startInForeground(tr("運行中", "Running") + " · 👍 ${c.optLong("like")} · 💬 ${c.optLong("comment")} · " + String.format(java.util.Locale.US, "%02d:%02d", s / 60, s % 60)) }
+                }
+            }
             val e = ScriptEngine(applicationContext, pack, task.put("target_package", pkg), binding, dryRun, runId)
             engine = e
             liveEngine = e
@@ -261,7 +269,7 @@ class RunService : Service() {
             liveEngine = null
             runningTaskId = null
             runningRunId = null
-            overlay?.hide(); overlay = null
+            notifJob?.cancel(); notifJob = null
             report.put("duration_ms", System.currentTimeMillis() - started)
             // NonCancellable: the report still goes out when the run was cancelled or the service is stopping.
             kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {

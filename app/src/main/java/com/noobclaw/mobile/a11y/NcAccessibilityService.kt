@@ -89,8 +89,17 @@ class NcAccessibilityService : AccessibilityService() {
         return (top ?: rootInActiveWindow)?.packageName?.toString()
     }
 
-    /** Dispatches a gesture and suspends until the system reports completion or cancellation. */
-    suspend fun gesture(path: Path, durationMs: Long): Boolean = suspendCancellableCoroutine { cont ->
+    /**
+     * Dispatches a gesture and suspends until the system reports completion or cancellation.
+     * The floating ball is made untouchable meanwhile, so a tap under it reaches TikTok, not the ball.
+     */
+    suspend fun gesture(path: Path, durationMs: Long): Boolean {
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { com.noobclaw.mobile.run.FloatBall.setPassThrough(true) }
+        kotlinx.coroutines.delay(60)
+        try { return gestureRaw(path, durationMs) } finally { com.noobclaw.mobile.run.FloatBall.setPassThrough(false) }
+    }
+
+    private suspend fun gestureRaw(path: Path, durationMs: Long): Boolean = suspendCancellableCoroutine { cont ->
         val g = GestureDescription.Builder()
             .addStroke(GestureDescription.StrokeDescription(path, 0, durationMs.coerceIn(1, 3000)))
             .build()

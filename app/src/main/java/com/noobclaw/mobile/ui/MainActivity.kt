@@ -154,6 +154,7 @@ class MainActivity : AppCompatActivity() {
         reportLastCrash()
         val inApp = Prefs.token.isNotEmpty() && Prefs.consentVersion >= RunService.CONSENT_VERSION
         if (inApp) RunService.start(this) // stand by
+        if (inApp) com.noobclaw.mobile.run.FloatBall.show(this)
         // Coming back from the system settings: continue when every permission is on.
         if (screen == Screen.PERMS && missingPerms().isEmpty()) {
             val then = permsThen; permsThen = null
@@ -367,7 +368,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun logout() {
-        Prefs.logout(); RunService.start(this, RunService.ACTION_SHUTDOWN); balance = null; balanceAt = 0L; balanceFailed = false
+        Prefs.logout(); com.noobclaw.mobile.run.FloatBall.hide(); RunService.start(this, RunService.ACTION_SHUTDOWN); balance = null; balanceAt = 0L; balanceFailed = false
         permsAutoShown = false; screen = Screen.HOME; render()
     }
 
