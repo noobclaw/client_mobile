@@ -1269,21 +1269,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     // ---------- task editor ----------
-    private data class Level(val likes: Int, val comments: Int, val follows: Int, val leads: Int)
-    private fun levelOf(script: String, l: String) = when (script) {
-        CL -> when (l) { "low" -> Level(30, 5, 0, 0); "high" -> Level(300, 30, 0, 0); else -> Level(100, 15, 0, 0) }
-        else -> when (l) { "low" -> Level(10, 5, 10, 10); "high" -> Level(100, 30, 50, 100); else -> Level(30, 15, 30, 30) }
-    }
-    private fun levelName(k: String) = when (k) {
-        "low" -> tr("少", "Few"); "high" -> tr("多", "Many"); else -> tr("中", "Normal")
-    }
-    private fun levelFromCaps(t: JSONObject): String {
-        val l = t.optJSONObject("config")?.optString("level").orEmpty()
-        if (l.isNotEmpty()) return l
-        val likes = t.optInt("max_likes", 100)
-        return if (likes <= 30) "low" else if (likes >= 200) "high" else "mid"
-    }
-
     private fun newTask() {
         if (taskFor(currentTab()) != null) { toast(tr("每個平台只能建 1 個任務", "One task per platform")); return }
         if (missingPerms().isNotEmpty()) { toast(tr("請先開啟全部 3 個權限", "Turn on all three permissions first")); go(Screen.PERMS); return }
@@ -1316,7 +1301,10 @@ class MainActivity : AppCompatActivity() {
         // _doReply 在下面才从旧配置初始化:这里先按同样规则算,免得编辑开了回复的任务时步骤数从 3 跳到 4
         val replyOn = if (d.has("_doReply")) d.optBoolean("_doReply") else d.optJSONObject("config")?.let { c ->
             (c.has("cl_like_gap_sec") || c.has("cl_ai_comment") || c.has("cl_like_nolimit")) && c.optBoolean("cl_do_reply", true) } ?: false
-        val steps = if (!clNow) listOf("task", "lvl", "freq") else if (replyOn) listOf("task", "act", "cmt", "freq") else listOf("task", "act", "freq")
+        // 定向獲客(和瀏覽器任務一致):評論總量 > 0 才有「評論」這一步
+        val leadCmtOn = !clNow && (if (d.has("_lComment")) (d.optString("_lComment").toIntOrNull() ?: 0) > 0
+            else d.optJSONObject("config")?.optBoolean("lead_do_comment", true) != false && d.optInt("max_comments", 0) > 0)
+        val steps = if (!clNow) (if (leadCmtOn) listOf("task", "lvl", "cmt", "freq") else listOf("task", "lvl", "freq")) else if (replyOn) listOf("task", "act", "cmt", "freq") else listOf("task", "act", "freq")
         val stepNow = d.optString("_step").takeIf { it in steps } ?: "task"
         val stepIdx = steps.indexOf(stepNow)
         fun stepLabel(k: String) = when (k) { "task" -> tr("任務", "Task"); "act" -> tr("動作", "Actions"); "cmt" -> tr("評論", "Replies"); "lvl" -> tr("數量", "Amount"); else -> tr("頻率", "Schedule") }
@@ -1390,7 +1378,43 @@ class MainActivity : AppCompatActivity() {
             d.put("_rw", oc?.optBoolean("cl_funnel_rewrite", true) ?: true)
             d.put("_prob", oc?.optInt("cl_funnel_prob", 100) ?: 100)
         }
-        var level = d.optString("_level").ifEmpty { levelFromCaps(d) }
+        // 定向獲客:本次潛客數 + 點讚 / 關注 / 評論的本次總量(0 = 不做),每個潛客只做 1 個動作;評論可關 AI 只發引流語
+        if (!cl && !d.has("_nLeads")) {
+            val lc = d.optJSONObject("config")
+            val isLeadTask = d.optString("script_id") != CL && lc != null
+            fun amt(k: String, on: String, dflt: Int) = if (isLeadTask) (if (lc!!.optBoolean(on, true)) d.optInt(k, dflt) else 0) else dflt
+            d.put("_nLeads", (if (isLeadTask) lc!!.optInt("leads_per_run", 100) else 100).toString())
+            d.put("_lLike", amt("max_likes", "lead_do_like", 100).toString())
+            d.put("_lFollow", amt("max_follows", "lead_do_follow", 0).toString())
+            d.put("_lComment", amt("max_comments", "lead_do_comment", 0).toString())
+            d.put("_ai", lc?.optBoolean("cl_ai_comment", true) ?: true)
+            d.put("_funnel", strs(lc?.optJSONArray("cl_funnel")).joinToString("\n"))
+            d.put("_rw", lc?.optBoolean("cl_funnel_rewrite", true) ?: true)
+            d.put("_prob", lc?.optInt("cl_funnel_prob", 100) ?: 100)
+        }
+        // 評論內容(評論區點讚的回覆 / 定向獲客的評論共用)
+        fun drawCmt(isLead: Boolean) {
+            sec = "cmt"
+            add(ui.section(if (isLead) tr("評論內容", "Comment content") else tr("評論內容", "Reply content")), bottom = 8)
+            val ai = d.optBoolean("_ai")
+            add(switchRow(if (isLead) tr("AI 根據潛客作品自主評論", "AI writes comments from the lead's post") else tr("AI 根據評論自主回覆", "AI writes replies from the comment"), ai) { d.put("_ai", !ai); render() }, bottom = 12)
+            add(ui.sub(tr("引流語(選填,每行一句)", "Funnel lines (optional, one per line)")), bottom = 6)
+            val fn = ui.input(tr("例如:主頁有教程", "e.g. Tutorial on my profile"), d.optString("_funnel"), multi = true)
+            watch(fn, "_funnel")
+            add(fn, bottom = 10)
+            val rw = d.optBoolean("_rw")
+            add(switchRow(tr("AI 改寫引流語(每次說法不同)", "AI rewords funnel lines"), rw) { d.put("_rw", !rw); render() }, bottom = 10)
+            if (ai) {
+                add(ui.sub(tr("帶引流語的概率", "Chance to add a funnel line")), bottom = 6)
+                val pr = ui.row()
+                val cur = d.optInt("_prob", 100)
+                listOf(10, 30, 50, 100).forEachIndexed { i, v ->
+                    pr.addView(ui.chip("$v%", v == cur) { d.put("_prob", v); render() }, ui.weight().apply { if (i < 3) marginEnd = ui.dp(8) })
+                }
+                add(pr, bottom = 6)
+                add(ui.sub(tr("沒填引流語時只發 AI 寫的內容", "Without funnel lines only the AI text is sent")), bottom = 20)
+            } else add(ui.sub(tr("關掉 AI 時,每條就是一句引流語(需要至少填一句)", "With AI off each one is a funnel line (add at least one)")), bottom = 20)
+        }
         if (cl) {
             sec = "act"
             add(ui.section(tr("動作", "Actions")), bottom = 8)
@@ -1421,47 +1445,40 @@ class MainActivity : AppCompatActivity() {
             add(ui.sub(tr("最多留空 = 不限,有多少做多少;間隔 = 做完一個等幾秒再做下一個,留空用默認(點讚 1 秒、評論 30 秒)",
                 "Empty max = no limit. Gap = seconds between actions; empty uses the default (likes 1 s, replies 30 s)")), bottom = 20)
 
-            if (d.optBoolean("_doReply")) {
-                sec = "cmt"
-                add(ui.section(tr("評論內容", "Reply content")), bottom = 8)
-                val ai = d.optBoolean("_ai")
-                add(switchRow(tr("AI 根據評論自主回覆", "AI writes replies from the comment"), ai) { d.put("_ai", !ai); render() }, bottom = 12)
-                add(ui.sub(tr("引流語(選填,每行一句)", "Funnel lines (optional, one per line)")), bottom = 6)
-                val fn = ui.input(tr("例如:主頁有教程", "e.g. Tutorial on my profile"), d.optString("_funnel"), multi = true)
-                watch(fn, "_funnel")
-                add(fn, bottom = 10)
-                val rw = d.optBoolean("_rw")
-                add(switchRow(tr("AI 改寫引流語(每次說法不同)", "AI rewords funnel lines"), rw) { d.put("_rw", !rw); render() }, bottom = 10)
-                if (ai) {
-                    add(ui.sub(tr("帶引流語的概率", "Chance to add a funnel line")), bottom = 6)
-                    val pr = ui.row()
-                    val cur = d.optInt("_prob", 100)
-                    listOf(10, 30, 50, 100).forEachIndexed { i, v ->
-                        pr.addView(ui.chip("$v%", v == cur) { d.put("_prob", v); render() }, ui.weight().apply { if (i < 3) marginEnd = ui.dp(8) })
-                    }
-                    add(pr, bottom = 6)
-                    add(ui.sub(tr("沒填引流語時只發 AI 回覆", "Without funnel lines only the AI reply is sent")), bottom = 20)
-                } else add(ui.sub(tr("關掉 AI 時,每條回覆就是一句引流語(需要至少填一句)", "With AI off every reply is a funnel line (add at least one)")), bottom = 20)
-            }
+            if (d.optBoolean("_doReply")) drawCmt(false)
         } else {
             sec = "lvl"
-            // amount
+            // 和瀏覽器的定向獲客一樣:本次潛客數 + 三個動作的本次總量
             add(ui.section(tr("數量", "Amount")), bottom = 8)
-            val amount = ui.sub("")
-            val chips = ui.row()
-            fun drawChips() {
-                chips.removeAllViews()
-                listOf("low", "mid", "high").forEach { k ->
-                    val ch = ui.chip(levelName(k), k == level) { level = k; d.put("_level", k); drawChips() }
-                    chips.addView(ch, ui.weight().apply { marginEnd = ui.dp(8) })
+            val box = ui.col()
+            fun numRow(title: String, desc: String, key: String) {
+                val r = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
+                val c = ui.col()
+                c.addView(ui.text(title, 14f, C.TEXT, true))
+                c.addView(ui.text(desc, 12f, C.SUB), ui.lp(top = 2))
+                r.addView(c, ui.weight().apply { marginEnd = ui.dp(10) })
+                val et = ui.input("0", d.optString(key), number = true).apply {
+                    textSize = 14f; gravity = Gravity.CENTER; setPadding(ui.dp(6), ui.dp(7), ui.dp(6), ui.dp(7))
                 }
-                val lv = levelOf(script, level)
-                amount.text = tr("每次：客戶 ${lv.leads} · 關注 ${lv.follows} · 點讚 ${lv.likes} · 評論 ${lv.comments}",
-                                  "Per run: ${lv.leads} leads · ${lv.follows} follows · ${lv.likes} likes · ${lv.comments} comments")
+                // 評論數從 0 變成大於 0(或反過來)會多 / 少一個「評論」步驟:「下一步」按當時的值決定去哪
+                et.addTextChangedListener(object : android.text.TextWatcher {
+                    override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                    override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                    override fun afterTextChanged(e: android.text.Editable?) {
+                        d.put(key, e?.toString() ?: "")
+                    }
+                })
+                r.addView(et, LinearLayout.LayoutParams(ui.dp(76), ViewGroup.LayoutParams.WRAP_CONTENT))
+                box.addView(r, ui.lp(bottom = 14))
             }
-            drawChips()
-            add(chips, bottom = 8)
-            add(amount, bottom = 20)
+            numRow(tr("本次潛客數", "Leads this run"), tr("收這麼多個新潛客,並對這麼多個還沒互動過的潛客各做 1 個動作 · 1~300", "Collect this many new leads and do one action on as many leads · 1–300"), "_nLeads")
+            numRow(tr("👍 本次點讚最大數量", "👍 Total likes this run"), tr("每人 1 個讚,點在他的第一條作品上 · 0 = 不點讚 · 最多 500", "1 like each, on their first post · 0 = off · max 500"), "_lLike")
+            numRow(tr("👤 本次關注最大數量", "👤 Total follows this run"), tr("每人關注一次 · 0 = 不關注 · 最多 100", "Follow once each · 0 = off · max 100"), "_lFollow")
+            numRow(tr("💬 本次評論最大數量", "💬 Total comments this run"), tr("每人 1 條,評論在他的第一條作品上 · 0 = 不評論 · 最多 300", "1 comment each, on their first post · 0 = off · max 300"), "_lComment")
+            add(box)
+            add(ui.sub(tr("每個潛客只做 1 個動作:點讚 / 關注 / 評論三選一,做完就不再碰他。三樣的總量按剩餘比例輪流分配。",
+                "Each lead gets exactly one action: like, follow or comment. The totals are shared out by what is left of each.")), bottom = 20)
+            if (leadCmtOn) drawCmt(true)
         }
 
         // schedule
@@ -1563,12 +1580,20 @@ class MainActivity : AppCompatActivity() {
                     .put("cl_funnel_prob", if (ai) d.optInt("_prob", 100) else 100)
                 out.put("max_likes", ml ?: 1000).put("max_comments", mc ?: 300).put("max_follows", 0)
             } else {
-                val lv = levelOf(script, level)
-                cfg.put("level", level).put("mode", if (kwMode) "keywords" else "accounts")
+                fun n(k: String, lo: Int, hi: Int) = (d.optString(k).trim().toIntOrNull() ?: lo).coerceIn(lo, hi)
+                val ll = n("_lLike", 0, 500); val lf = n("_lFollow", 0, 100); val lc = n("_lComment", 0, 300)
+                if (ll + lf + lc == 0) { toast(tr("點讚、關注、評論至少一項大於 0", "Set at least one of likes, follows, comments above 0")); return null }
+                val ai = d.optBoolean("_ai", true)
+                val funnel = lines(d.optString("_funnel")).take(20).map { it.take(120) }
+                if (lc > 0 && !ai && funnel.isEmpty()) { toast(tr("關掉 AI 評論時請至少填一句引流語", "With AI comments off, add at least one funnel line")); return null }
+                cfg.put("level", "").put("mode", if (kwMode) "keywords" else "accounts")
                     .put("seed_accounts", JSONArray(targets)).put("keywords", JSONArray(words))
-                    .put("leads_per_run", lv.leads)
-                if (!sameScript) cfg.put("lead_do_like", true).put("lead_do_follow", true).put("lead_do_comment", true)
-                out.put("max_likes", lv.likes).put("max_comments", lv.comments).put("max_follows", lv.follows)
+                    .put("leads_per_run", n("_nLeads", 1, 300))
+                    .put("lead_do_like", ll > 0).put("lead_do_follow", lf > 0).put("lead_do_comment", lc > 0)
+                    .put("cl_ai_comment", ai).put("cl_funnel", JSONArray(funnel))
+                    .put("cl_funnel_rewrite", d.optBoolean("_rw", true))
+                    .put("cl_funnel_prob", if (ai) d.optInt("_prob", 100) else 100)
+                out.put("max_likes", ll).put("max_comments", lc).put("max_follows", lf)
             }
             // 默認名用繁體(跟服務器、電腦端一致);換了劇本就換成新劇本的默認名
             val baseName = if (cl) "評論區點讚任務" else "定向獲客任務"
@@ -1595,6 +1620,7 @@ class MainActivity : AppCompatActivity() {
                 else if (!kwMode && lines(d.optString("_tg")).isEmpty()) (if (cl) tr("請填 TikTok 作品鏈接或用戶 ID", "Add a TikTok video link or user ID") else tr("請填至少 1 個同行帳號", "Add at least one competitor account"))
                 else null
             "act" -> if (!d.optBoolean("_doLike") && !d.optBoolean("_doReply")) tr("請至少開啟一個動作", "Turn on at least one action") else null
+            "lvl" -> if (listOf("_lLike", "_lFollow", "_lComment").sumOf { d.optString(it).trim().toIntOrNull() ?: 0 } == 0) tr("點讚、關注、評論至少一項大於 0", "Set at least one of likes, follows, comments above 0") else null
             "cmt" -> if (!d.optBoolean("_ai") && lines(d.optString("_funnel").replace(',', '\u0000').replace('，', '\u0000')).isEmpty()) tr("關掉 AI 回覆時請至少填一句引流語", "With AI replies off, add at least one funnel line") else null
             else -> null
         }
@@ -1602,10 +1628,11 @@ class MainActivity : AppCompatActivity() {
         if (!last) {
             val nav = ui.row()
             if (stepIdx > 0) nav.addView(ui.secondary(tr("上一步", "Back")) { goStep(steps[stepIdx - 1]) }, ui.weight().apply { marginEnd = ui.dp(10) })
-            nav.addView(ui.primary(tr("下一步：", "Next: ") + stepLabel(steps[stepIdx + 1])) {
+            val dynNext = stepNow == "lvl" && !clNow   // 定向獲客:評論數剛改過,下一步是「評論」還是「頻率」按現在的值算
+            nav.addView(ui.primary(if (dynNext) tr("下一步", "Next") else tr("下一步：", "Next: ") + stepLabel(steps[stepIdx + 1])) {
                 val why = checkStep(stepNow)
                 if (why != null) { toast(why); return@primary }
-                goStep(steps[stepIdx + 1])
+                goStep(if (dynNext) (if ((d.optString("_lComment").trim().toIntOrNull() ?: 0) > 0) "cmt" else "freq") else steps[stepIdx + 1])
             }, ui.weight())
             this.add(nav, bottom = 10)
         } else {
