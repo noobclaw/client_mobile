@@ -12,6 +12,8 @@
     <!-- Exact alarms are used only when granted; otherwise inexact alarms with a 10 min tolerance. -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- In-app forced update: hands the downloaded APK to the system installer (Updater.kt). -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- Only the target apps are visible to us (package visibility, Android 11+). -->
     <queries>
         <package android:name="com.zhiliaoapp.musically" />
@@ -55,6 +57,16 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="User-scheduled automation session for the user's own social media account" />
         </service>
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.updates"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/update_paths" />
+        </provider>
 
         <receiver
             android:name=".run.AlarmReceiver"

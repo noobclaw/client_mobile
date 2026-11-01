@@ -35,6 +35,7 @@ import com.noobclaw.mobile.run.Schedule
 import com.noobclaw.mobile.util.I18n
 import com.noobclaw.mobile.util.Prefs
 import com.noobclaw.mobile.util.RunLog
+import com.noobclaw.mobile.util.Updater
 import com.noobclaw.mobile.util.tr
 import com.noobclaw.mobile.util.trf
 import kotlinx.coroutines.launch
@@ -58,6 +59,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var nav: LinearLayout
     private var screen = Screen.HOME
     private var draft: JSONObject? = null           // task being created / edited
+    // in-app forced update
+    private var updateDialog: Dialog? = null
+    private var updateRel: Updater.Release? = null
+    private var updateApk: java.io.File? = null
+    private var updateBusy = false
+    private var updateCheckedAt = 0L
     private var configBack = Screen.HOME             // where 返回 / 保存 goes from the editor
     private var platformTab = "tiktok"
     private var permsThen: (() -> Unit)? = null      // continues after the permission screen
@@ -156,6 +163,10 @@ class MainActivity : AppCompatActivity() {
         } else render()
         RunLog.onLine(logListener)
         main.post(ticker)
+        // Back from「允許安裝未知應用」settings with the APK ready → install; otherwise look for a new version.
+        val apk = updateApk
+        if (apk != null && apk.exists() && Updater.canInstall(this)) runCatching { Updater.install(this, apk) }
+        else checkUpdate(force = updateDialog?.isShowing == true)
         if (inApp && System.currentTimeMillis() - syncedAt > 60_000) {
             syncedAt = System.currentTimeMillis()
             lifecycleScope.launch { Api.refreshCompliance(); syncTasks(); if (screen == Screen.HOME || screen == Screen.DETAIL) render() }
@@ -179,6 +190,7 @@ class MainActivity : AppCompatActivity() {
         override fun run() {
             val sig = signature()
             if (sig != lastSig && (screen == Screen.HOME || screen == Screen.DETAIL)) render()
+            if (System.currentTimeMillis() - updateCheckedAt > 30 * 60_000L) checkUpdate()
             lastSig = sig
             main.postDelayed(this, 2000)
         }
@@ -1098,6 +1110,68 @@ class MainActivity : AppCompatActivity() {
         showDialog(d, box)
     }
 
+    // ---------- in-app forced update ----------
+    /** Asks the server for the latest APK (at most every 10 min unless [force]); a newer one opens the update dialog. */
+    private fun checkUpdate(force: Boolean = false) {
+        val now = System.currentTimeMillis()
+        if (updateBusy || (!force && now - updateCheckedAt < 10 * 60_000L)) return
+        updateCheckedAt = now
+        lifecycleScope.launch {
+            val rel = Updater.check() ?: return@launch
+            if (isFinishing || isDestroyed) return@launch
+            updateRel = rel
+            if (updateDialog?.isShowing != true) showUpdateDialog(rel)
+        }
+    }
+
+    private fun showUpdateDialog(rel: Updater.Release) {
+        val (d, box) = dialogBox()
+        d.setCancelable(false)          // forced: no back / outside tap
+        d.setCanceledOnTouchOutside(false)
+        box.addView(ui.h2(tr("發現新版本 v${rel.version}", "New version v${rel.version}")), ui.lp(bottom = 10))
+        box.addView(ui.text(tr("當前 v${BuildConfig.VERSION_NAME}，需要更新後才能繼續使用。", "You have v${BuildConfig.VERSION_NAME}. Update to keep using the app."), 14f, C.SUB), ui.lp(bottom = 6))
+        if (rel.notes.isNotBlank()) box.addView(ui.text(rel.notes, 13f, C.SUB), ui.lp(bottom = 6))
+        val status = ui.text("", 13f, C.SUB)
+        box.addView(status, ui.lp(top = 6, bottom = 14))
+        lateinit var btn: TextView
+        btn = ui.primary(tr("立即更新", "Update now")) {
+            if (updateBusy) return@primary
+            val ready = updateApk
+            if (ready != null && ready.exists()) { installUpdate(ready, status); return@primary }
+            updateBusy = true
+            btn.text = tr("下載中…", "Downloading…")
+            lifecycleScope.launch {
+                try {
+                    val f = Updater.download(this@MainActivity, rel) { p ->
+                        status.text = if (p >= 0) tr("已下載 $p%", "Downloaded $p%") else tr("下載中…", "Downloading…")
+                    }
+                    updateApk = f
+                    btn.text = tr("安裝", "Install")
+                    status.text = tr("下載完成", "Downloaded")
+                    installUpdate(f, status)
+                } catch (e: Exception) {
+                    btn.text = tr("重試", "Retry")
+                    status.text = tr("下載失敗：", "Download failed: ") + (e.message ?: "")
+                } finally { updateBusy = false }
+            }
+        }
+        box.addView(btn, ui.lp(bottom = 8))
+        box.addView(ui.secondary(tr("用瀏覽器下載", "Download in browser")) {
+            runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(rel.url))) }
+        })
+        updateDialog = d
+        showDialog(d, box)
+    }
+
+    private fun installUpdate(apk: java.io.File, status: TextView) {
+        if (!Updater.canInstall(this)) {
+            status.text = tr("請允許「安裝未知應用」，返回後自動安裝", "Allow \"install unknown apps\", then come back to install")
+            Updater.openInstallPermission(this)
+            return
+        }
+        runCatching { Updater.install(this, apk) }.onFailure { status.text = tr("無法打開安裝程序：", "Couldn't open the installer: ") + (it.message ?: "") }
+    }
+
     // ---------- task editor ----------
     private data class Level(val likes: Int, val comments: Int, val follows: Int, val leads: Int)
     private fun levelOf(script: String, l: String) = when (script) {
@@ -1177,35 +1251,92 @@ class MainActivity : AppCompatActivity() {
         })
         add(where, bottom = 20)
 
-        // amount
-        add(ui.section(tr("數量", "Amount")), bottom = 8)
-        var level = d.optString("_level").ifEmpty { levelFromCaps(d) }
-        val amount = ui.sub("")
-        val chips = ui.row()
-        fun drawChips() {
-            chips.removeAllViews()
-            listOf("low", "mid", "high").forEach { k ->
-                val ch = ui.chip(levelName(k), k == level) { level = k; d.put("_level", k); drawChips() }
-                chips.addView(ch, ui.weight().apply { marginEnd = ui.dp(8) })
-            }
-            val lv = levelOf(script, level)
-            amount.text = if (cl) tr("每次：點讚 ${lv.likes} · 回覆 ${lv.comments}", "Per run: ${lv.likes} likes · ${lv.comments} replies")
-                          else tr("每次：客戶 ${lv.leads} · 關注 ${lv.follows} · 點讚 ${lv.likes} · 評論 ${lv.comments}",
-                                  "Per run: ${lv.leads} leads · ${lv.follows} follows · ${lv.likes} likes · ${lv.comments} comments")
-        }
-        drawChips()
-        add(chips, bottom = 8)
-        add(amount, bottom = 20)
-
-        // persona
-        add(ui.section(tr("人設（選填）", "Persona (optional)")), bottom = 8)
-        val persona = ui.input(tr("例如：東京咖啡店店員，語氣輕鬆", "e.g. a barista in Tokyo, relaxed tone"), d.optString("persona"))
-        persona.addTextChangedListener(object : android.text.TextWatcher {
+        fun watch(et: android.widget.EditText, key: String) = et.addTextChangedListener(object : android.text.TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
             override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
-            override fun afterTextChanged(s: android.text.Editable?) { d.put("persona", s?.toString() ?: "") }
+            override fun afterTextChanged(s: android.text.Editable?) { d.put(key, s?.toString() ?: "") }
         })
-        add(persona, bottom = 20)
+        // 評論區點讚(和電腦端雲機任務一致,2026-11):點讚 / 評論各自開關、最多數量(留空 = 不限)、間隔秒數,
+        // 評論時可選 AI 自主評論 + 引流語(改寫、概率)。舊任務沒有這些字段 → 按原來的默認值顯示。
+        val oc = if (d.optString("script_id") == CL) d.optJSONObject("config") else null
+        val hasCl = oc != null && (oc.has("cl_like_gap_sec") || oc.has("cl_ai_comment") || oc.has("cl_like_nolimit"))
+        if (!d.has("_doLike")) {
+            d.put("_doLike", oc?.optBoolean("cl_do_like", true) ?: true)
+            d.put("_doReply", if (hasCl) oc!!.optBoolean("cl_do_reply", true) else false)
+            d.put("_nLike", if (hasCl && !oc!!.optBoolean("cl_like_nolimit") && d.optInt("max_likes") > 0) d.optInt("max_likes").toString() else "")
+            d.put("_nReply", if (hasCl && !oc!!.optBoolean("cl_reply_nolimit") && d.optInt("max_comments") > 0) d.optInt("max_comments").toString() else "")
+            d.put("_gLike", (oc?.optInt("cl_like_gap_sec", 1) ?: 1).toString())
+            d.put("_gReply", (oc?.optInt("cl_reply_gap_sec", 30) ?: 30).toString())
+            d.put("_ai", oc?.optBoolean("cl_ai_comment", true) ?: true)
+            d.put("_funnel", strs(oc?.optJSONArray("cl_funnel")).joinToString("\n"))
+            d.put("_rw", oc?.optBoolean("cl_funnel_rewrite", true) ?: true)
+            d.put("_prob", oc?.optInt("cl_funnel_prob", 30) ?: 30)
+        }
+        var level = d.optString("_level").ifEmpty { levelFromCaps(d) }
+        if (cl) {
+            add(ui.section(tr("動作", "Actions")), bottom = 8)
+            val actBox = ui.col()
+            fun drawActs() {
+                actBox.removeAllViews()
+                fun action(on: Boolean, title: String, onKey: String, nKey: String, gKey: String, gHint: String) {
+                    actBox.addView(ui.chip((if (on) "✓  " else "") + title, on) { d.put(onKey, !on); render() }, ui.lp(bottom = 8))
+                    if (!on) return
+                    val r = ui.row()
+                    val n = ui.input(tr("最多(留空=不限)", "Max (empty = no limit)"), d.optString(nKey), number = true).apply { textSize = 14f }
+                    val g = ui.input(gHint, d.optString(gKey), number = true).apply { textSize = 14f }
+                    watch(n, nKey); watch(g, gKey)
+                    r.addView(n, ui.weight().apply { marginEnd = ui.dp(8) })
+                    r.addView(g, ui.weight())
+                    actBox.addView(r, ui.lp(bottom = 12))
+                }
+                action(d.optBoolean("_doLike"), tr("點讚評論", "Like comments"), "_doLike", "_nLike", "_gLike", tr("間隔秒數(默認 1)", "Gap sec (default 1)"))
+                action(d.optBoolean("_doReply"), tr("回覆評論", "Reply to comments"), "_doReply", "_nReply", "_gReply", tr("間隔秒數(默認 30)", "Gap sec (default 30)"))
+            }
+            drawActs()
+            add(actBox)
+            add(ui.sub(tr("最多留空 = 有多少做多少(每次最多點讚 1000、評論 300);間隔 = 做完一個等幾秒再做下一個",
+                "Empty max = no limit (per run at most 1000 likes / 300 replies). Gap = seconds between actions")), bottom = 20)
+
+            if (d.optBoolean("_doReply")) {
+                add(ui.section(tr("評論內容", "Reply content")), bottom = 8)
+                val ai = d.optBoolean("_ai")
+                add(ui.chip((if (ai) "✓  " else "") + tr("AI 根據評論自主回覆", "AI writes replies from the comment"), ai) { d.put("_ai", !ai); render() }, bottom = 12)
+                add(ui.sub(tr("引流語(選填,每行一句)", "Funnel lines (optional, one per line)")), bottom = 6)
+                val fn = ui.input(tr("例如:主頁有教程", "e.g. Tutorial on my profile"), d.optString("_funnel"), multi = true)
+                watch(fn, "_funnel")
+                add(fn, bottom = 10)
+                val rw = d.optBoolean("_rw")
+                add(ui.chip((if (rw) "✓  " else "") + tr("AI 改寫引流語(每次說法不同)", "AI rewords funnel lines"), rw) { d.put("_rw", !rw); render() }, bottom = 10)
+                if (ai) {
+                    add(ui.sub(tr("帶引流語的概率", "Chance to add a funnel line")), bottom = 6)
+                    val pr = ui.row()
+                    val cur = d.optInt("_prob", 30)
+                    listOf(10, 30, 50, 100).forEachIndexed { i, v ->
+                        pr.addView(ui.chip("$v%", v == cur) { d.put("_prob", v); render() }, ui.weight().apply { if (i < 3) marginEnd = ui.dp(8) })
+                    }
+                    add(pr, bottom = 6)
+                    add(ui.sub(tr("沒填引流語時只發 AI 回覆", "Without funnel lines only the AI reply is sent")), bottom = 20)
+                } else add(ui.sub(tr("關掉 AI 時,每條回覆就是一句引流語(需要至少填一句)", "With AI off every reply is a funnel line (add at least one)")), bottom = 20)
+            }
+        } else {
+            // amount
+            add(ui.section(tr("數量", "Amount")), bottom = 8)
+            val amount = ui.sub("")
+            val chips = ui.row()
+            fun drawChips() {
+                chips.removeAllViews()
+                listOf("low", "mid", "high").forEach { k ->
+                    val ch = ui.chip(levelName(k), k == level) { level = k; d.put("_level", k); drawChips() }
+                    chips.addView(ch, ui.weight().apply { marginEnd = ui.dp(8) })
+                }
+                val lv = levelOf(script, level)
+                amount.text = tr("每次：客戶 ${lv.leads} · 關注 ${lv.follows} · 點讚 ${lv.likes} · 評論 ${lv.comments}",
+                                  "Per run: ${lv.leads} leads · ${lv.follows} follows · ${lv.likes} likes · ${lv.comments} comments")
+            }
+            drawChips()
+            add(chips, bottom = 8)
+            add(amount, bottom = 20)
+        }
 
         // schedule
         add(ui.section(tr("定時", "Schedule")), bottom = 8)
@@ -1262,33 +1393,52 @@ class MainActivity : AppCompatActivity() {
                 return null
             }
             if (!kwMode && cl && targets.size < rawTargets.size) toast(tr("不是 TikTok 鏈接的已忽略", "Lines that aren't TikTok links were skipped"))
-            val lv = levelOf(script, level)
-            val cfg = JSONObject().put("level", level)
+            fun posInt(v: String, lo: Int, hi: Int): Int? = v.trim().toIntOrNull()?.takeIf { it > 0 }?.coerceIn(lo, hi)
+            val sameScript = editing && d.optString("script_id") == script
+            // 同劇本編輯:保留原配置裡本頁沒有的字段(電腦端 / 新版本加的),只覆蓋本頁管的
+            val cfg = if (sameScript) JSONObject((d.optJSONObject("config") ?: JSONObject()).toString()) else JSONObject()
+            val out = JSONObject()
             if (cl) {
+                val doLike = d.optBoolean("_doLike"); val doReply = d.optBoolean("_doReply")
+                if (!doLike && !doReply) { toast(tr("請至少開啟一個動作", "Turn on at least one action")); return null }
+                val ai = d.optBoolean("_ai")
+                val funnel = lines(d.optString("_funnel").replace(',', '\u0000').replace('，', '\u0000')).map { it.replace('\u0000', ',') }.take(20).map { it.take(120) }
+                if (doReply && !ai && funnel.isEmpty()) { toast(tr("關掉 AI 回覆時請至少填一句引流語", "With AI replies off, add at least one funnel line")); return null }
+                val ml = posInt(d.optString("_nLike"), 1, 1000); val mc = posInt(d.optString("_nReply"), 1, 300)
                 cfg.put("comment_mode", if (kwMode) "keywords" else "precise")
-                    .put("urls", JSONArray(targets)).put("keywords", JSONArray(words))
-                    .put("cl_do_like", true).put("cl_do_reply", true)
+                    .put("urls", JSONArray(targets)).put("keywords", JSONArray(words)).put("level", "")
+                    .put("cl_do_like", doLike).put("cl_do_reply", doReply)
+                    .put("cl_like_nolimit", ml == null).put("cl_reply_nolimit", mc == null)
+                    .put("cl_like_gap_sec", posInt(d.optString("_gLike"), 1, 600) ?: 1)
+                    .put("cl_reply_gap_sec", posInt(d.optString("_gReply"), 5, 3600) ?: 30)
+                    .put("cl_ai_comment", ai).put("cl_funnel", JSONArray(funnel))
+                    .put("cl_funnel_rewrite", d.optBoolean("_rw", true))
+                    .put("cl_funnel_prob", if (ai) d.optInt("_prob", 30) else 100)
+                out.put("max_likes", ml ?: 1000).put("max_comments", mc ?: 300).put("max_follows", 0)
             } else {
-                cfg.put("mode", if (kwMode) "keywords" else "accounts")
+                val lv = levelOf(script, level)
+                cfg.put("level", level).put("mode", if (kwMode) "keywords" else "accounts")
                     .put("seed_accounts", JSONArray(targets)).put("keywords", JSONArray(words))
                     .put("leads_per_run", lv.leads)
-                    .put("lead_do_like", true).put("lead_do_follow", true).put("lead_do_comment", true)
+                if (!sameScript) cfg.put("lead_do_like", true).put("lead_do_follow", true).put("lead_do_comment", true)
+                out.put("max_likes", lv.likes).put("max_comments", lv.comments).put("max_follows", lv.follows)
             }
             // 默認名用繁體(跟服務器、電腦端一致);換了劇本就換成新劇本的默認名
             val baseName = if (cl) "評論區點讚任務" else "定向獲客任務"
-            val keepName = editing && d.optString("script_id") == script && d.optString("name").isNotEmpty()
+            val keepName = sameScript && d.optString("name").isNotEmpty()
             val sc = Schedule.kind(d)
-            return JSONObject()
+            return out
                 .put("id", d.optString("id").ifEmpty { "t" + System.currentTimeMillis().toString(36) })
                 .put("name", if (keepName) d.optString("name") else baseName)
                 .put("script_id", script).put("platform", "tiktok").put("config", cfg)
-                .put("max_likes", lv.likes).put("max_comments", lv.comments).put("max_follows", lv.follows)
                 .put("schedule", Schedule.toJson(sc))
                 // legacy fields for apps < 0.6 (the server fills them too)
                 .put("enabled", sc !is Schedule.Kind.Manual)
                 .put("slots", JSONArray(if (sc is Schedule.Kind.Daily) kotlin.collections.listOf(hm(sc.at.hour, sc.at.minute)) else emptyList<String>()))
-                .put("tz", d.optString("tz").ifEmpty { ZoneId.systemDefault().id }) // edits keep the task's zone.put("max_run_minutes", d.optInt("max_run_minutes", 60))
-                .put("persona", d.optString("persona").take(400))
+                .put("tz", d.optString("tz").ifEmpty { ZoneId.systemDefault().id }) // edits keep the task's zone
+                .put("max_run_minutes", d.optInt("max_run_minutes", 60))
+                // 人設不再展示:清空,免得看不見的舊人設還在影響 AI 回覆(同電腦端)
+                .put("persona", "")
         }
 
         add(ui.primary(if (editing) tr("保存", "Save") else tr("保存並運行", "Save and run")) {
