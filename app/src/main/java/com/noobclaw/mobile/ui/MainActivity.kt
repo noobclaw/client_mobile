@@ -1351,15 +1351,15 @@ class MainActivity : AppCompatActivity() {
         add(mRow, bottom = 6)
         add(ui.sub(when {
             kwMode -> tr("按關鍵詞搜視頻，在評論區互動", "Searches videos by keyword and works their comments")
-            cl -> tr("只在你給的作品鏈接下互動", "Works only the videos you link")
+            cl -> tr("只在你給的作品下互動；填用戶 ID 會做這個人主頁的作品", "Works only the videos you give; a user ID works that profile's videos")
             else -> tr("從同行帳號的粉絲和評論裡找客戶", "Finds leads among a competitor's commenters")
         }), bottom = 12)
 
-        val label = when { kwMode -> tr("關鍵詞（每行一個）", "Keywords (one per line)"); cl -> tr("作品鏈接（每行一個）", "Video links (one per line)"); else -> tr("同行帳號（每行一個）", "Competitor accounts (one per line)") }
+        val label = when { kwMode -> tr("關鍵詞（每行一個）", "Keywords (one per line)"); cl -> tr("作品鏈接 / 主頁鏈接 / 用戶 ID（每行一個）", "Video link / profile link / user ID (one per line)"); else -> tr("同行帳號（每行一個）", "Competitor accounts (one per line)") }
         add(ui.section(label), bottom = 8)
         val where = ui.input(when {
             kwMode -> tr("例如 latte art", "e.g. latte art")
-            cl -> "https://www.tiktok.com/@name/video/…"
+            cl -> tr("例如 @name 或 https://www.tiktok.com/@name/video/…", "e.g. @name or https://www.tiktok.com/@name/video/…")
             else -> tr("例如 @rival", "e.g. @rival")
         }, if (kwMode) d.optString("_kw") else d.optString("_tg"), multi = true)
         where.addTextChangedListener(object : android.text.TextWatcher {
@@ -1529,15 +1529,17 @@ class MainActivity : AppCompatActivity() {
             val words = lines(d.optString("_kw")).take(20)
             val rawTargets = lines(d.optString("_tg"))
             val urlRe = Regex("^https://(www\\.|m\\.|vm\\.|vt\\.)?tiktok\\.com/\\S*$", RegexOption.IGNORE_CASE)
-            val targets = if (cl) rawTargets.map { if (it.startsWith("@")) "https://www.tiktok.com/$it" else it }.filter { urlRe.matches(it) }.take(20)
+            // 用户 ID(@name / name / na.me)= 这个人的主页;手机上一般只看得到 ID,没有链接
+            val idRe = Regex("^@?[A-Za-z0-9._]{2,24}$")
+            val targets = if (cl) rawTargets.map { if (idRe.matches(it) && !it.equals("tiktok.com", true)) "https://www.tiktok.com/@" + it.removePrefix("@") else it.replace(Regex("^http://", RegexOption.IGNORE_CASE), "https://") }.filter { urlRe.matches(it) }.take(20)
                 else rawTargets.map { if (it.startsWith("http", true) || it.startsWith("@")) it else "@$it" }.take(20)
             if (kwMode && words.isEmpty()) { toast(tr("請填至少 1 個關鍵詞", "Add at least one keyword")); return null }
             if (!kwMode && targets.isEmpty()) {
-                toast(if (cl) tr("請填 TikTok 作品鏈接（https://www.tiktok.com/…）", "Add a TikTok video link (https://www.tiktok.com/…)")
+                toast(if (cl) tr("請填 TikTok 作品鏈接、主頁鏈接或用戶 ID", "Add a TikTok video link, profile link or user ID")
                       else tr("請填至少 1 個同行帳號", "Add at least one competitor account"))
                 return null
             }
-            if (!kwMode && cl && targets.size < rawTargets.size) toast(tr("不是 TikTok 鏈接的已忽略", "Lines that aren't TikTok links were skipped"))
+            if (!kwMode && cl && targets.size < rawTargets.size) toast(tr("不是 TikTok 鏈接或用戶 ID 的已忽略", "Lines that aren't TikTok links or user IDs were skipped"))
             fun posInt(v: String, lo: Int, hi: Int): Int? = v.trim().toIntOrNull()?.takeIf { it > 0 }?.coerceIn(lo, hi)
             val sameScript = editing && d.optString("script_id") == script
             // 同劇本編輯:保留原配置裡本頁沒有的字段(電腦端 / 新版本加的),只覆蓋本頁管的
@@ -1590,7 +1592,7 @@ class MainActivity : AppCompatActivity() {
         fun goStep(k: String) { d.put("_step", k); render(); scroll.scrollTo(0, 0) }
         fun checkStep(k: String): String? = when (k) {
             "task" -> if (kwMode && lines(d.optString("_kw")).isEmpty()) tr("請填至少 1 個關鍵詞", "Add at least one keyword")
-                else if (!kwMode && lines(d.optString("_tg")).isEmpty()) (if (cl) tr("請填 TikTok 作品鏈接", "Add a TikTok video link") else tr("請填至少 1 個同行帳號", "Add at least one competitor account"))
+                else if (!kwMode && lines(d.optString("_tg")).isEmpty()) (if (cl) tr("請填 TikTok 作品鏈接或用戶 ID", "Add a TikTok video link or user ID") else tr("請填至少 1 個同行帳號", "Add at least one competitor account"))
                 else null
             "act" -> if (!d.optBoolean("_doLike") && !d.optBoolean("_doReply")) tr("請至少開啟一個動作", "Turn on at least one action") else null
             "cmt" -> if (!d.optBoolean("_ai") && lines(d.optString("_funnel").replace(',', '\u0000').replace('，', '\u0000')).isEmpty()) tr("關掉 AI 回覆時請至少填一句引流語", "With AI replies off, add at least one funnel line") else null
