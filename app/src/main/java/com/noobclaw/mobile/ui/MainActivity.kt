@@ -1032,7 +1032,6 @@ class MainActivity : AppCompatActivity() {
             stats.addView(c, ui.weight().apply { if (!last) marginEnd = ui.dp(10) })
         }
         stat(b?.let { fmtCredits(it.optLong("tokenBalance")) } ?: "—", tr("積分", "Credits"))
-        stat(if (Prefs.phoneLimit > 0) "${Prefs.phoneLimit}" else "—", tr("可用手機", "Phones allowed"))
         stat(b?.let { expiryText(it) } ?: "—", tr("會員到期", "Plan ends"), last = true)
         add(stats, bottom = 18)
         if (System.currentTimeMillis() - balanceAt > 60_000) loadBalance()
@@ -1051,7 +1050,7 @@ class MainActivity : AppCompatActivity() {
             list.addView(r)
             if (divider) list.addView(View(this).apply { setBackgroundColor(C.BORDER) }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 1))
         }
-        item(tr("TikTok 帳號", "TikTok account"), tiktokHandle().ifEmpty { tr("未識別", "Not detected") }, onClick = null)
+        // 「可用手機」「TikTok 帳號」去掉(不只跑 TikTok;帳號在首頁各平台卡片上看)
         item(tr("權限", "Permissions"), if (missing.isEmpty()) tr("已開啟", "All on") else tr("缺 ${missing.size} 項", "${missing.size} missing"),
             if (missing.isEmpty()) C.ACCENT else C.WARN) { go(Screen.PERMS) }
         item(tr("語言", "Language"), I18n.lang.label) { chooseLanguage() }
