@@ -261,7 +261,12 @@ class RunService : Service() {
             RunLog.i(tr("運行結束：", "Run finished: ") + "${result.optString("status", "done")} ${result.optString("reason")}", runId)
         } catch (e: ScriptLoader.Rejected) {
             report.put("status", "rejected").put("reason", e.reason)
-            RunLog.e(tr("劇本被拒絕：", "Script refused: ") + e.reason, runId)
+            if (e.reason == "concurrency_limit") {
+                // 會員可同時運行的手機數已滿:這次不開始,告訴用戶(登錄不限台數,限的是同時跑的台數)
+                val msg = tr("同時運行的手機已達會員上限，等其他手機跑完再試，或升級會員", "Your plan's limit of phones running at once is reached — try later or upgrade")
+                RunLog.w(msg, runId)
+                android.os.Handler(android.os.Looper.getMainLooper()).post { android.widget.Toast.makeText(applicationContext, msg, android.widget.Toast.LENGTH_LONG).show() }
+            } else RunLog.e(tr("劇本被拒絕：", "Script refused: ") + e.reason, runId)
         } catch (e: kotlinx.coroutines.CancellationException) {
             report.put("status", "stopped").put("reason", "user_stopped")
         } catch (e: Exception) {

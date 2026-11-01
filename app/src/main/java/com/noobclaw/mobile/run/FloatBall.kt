@@ -496,6 +496,7 @@ object FloatBall {
         "caps_reached", "daily_cap" -> tr("到達數量上限", "Limit reached")
         "not_logged_in" -> tr("TikTok 沒登錄", "TikTok not logged in")
         "app_not_installed" -> tr("沒裝 TikTok", "TikTok not installed")
+        "concurrency_limit" -> tr("同時運行的手機已達會員上限", "Too many phones running at once for your plan")
         else -> r.take(60)
     }
 
