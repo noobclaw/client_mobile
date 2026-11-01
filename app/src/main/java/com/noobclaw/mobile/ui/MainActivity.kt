@@ -1378,13 +1378,13 @@ class MainActivity : AppCompatActivity() {
             d.put("_rw", oc?.optBoolean("cl_funnel_rewrite", true) ?: true)
             d.put("_prob", oc?.optInt("cl_funnel_prob", 100) ?: 100)
         }
-        // 定向獲客:本次潛客數 + 點讚 / 關注 / 評論的本次總量(0 = 不做),每個潛客只做 1 個動作;評論可關 AI 只發引流語
+        // 定向獲客(和瀏覽器一致):採集不設上限;點讚數是目標(每個潛客都點,不夠回評論區補讚),關注 / 評論是本次總量(0 = 不做)
         if (!cl && !d.has("_nLeads")) {
             val lc = d.optJSONObject("config")
             val isLeadTask = d.optString("script_id") != CL && lc != null
             fun amt(k: String, on: String, dflt: Int) = if (isLeadTask) (if (lc!!.optBoolean(on, true)) d.optInt(k, dflt) else 0) else dflt
-            d.put("_nLeads", (if (isLeadTask) lc!!.optInt("leads_per_run", 100) else 100).toString())
-            d.put("_lLike", amt("max_likes", "lead_do_like", 100).toString())
+            d.put("_nLeads", "1")   // 只當「已初始化」的標記
+            d.put("_lLike", amt("max_likes", "lead_do_like", 300).toString())
             d.put("_lFollow", amt("max_follows", "lead_do_follow", 0).toString())
             d.put("_lComment", amt("max_comments", "lead_do_comment", 0).toString())
             d.put("_ai", lc?.optBoolean("cl_ai_comment", true) ?: true)
@@ -1471,13 +1471,12 @@ class MainActivity : AppCompatActivity() {
                 r.addView(et, LinearLayout.LayoutParams(ui.dp(76), ViewGroup.LayoutParams.WRAP_CONTENT))
                 box.addView(r, ui.lp(bottom = 14))
             }
-            numRow(tr("本次潛客數", "Leads this run"), tr("收這麼多個新潛客,並對這麼多個還沒互動過的潛客各做 1 個動作 · 1~300", "Collect this many new leads and do one action on as many leads · 1–300"), "_nLeads")
-            numRow(tr("👍 本次點讚最大數量", "👍 Total likes this run"), tr("每人 1 個讚,點在他的第一條作品上 · 0 = 不點讚 · 最多 500", "1 like each, on their first post · 0 = off · max 500"), "_lLike")
-            numRow(tr("👤 本次關注最大數量", "👤 Total follows this run"), tr("每人關注一次 · 0 = 不關注 · 最多 100", "Follow once each · 0 = off · max 100"), "_lFollow")
-            numRow(tr("💬 本次評論最大數量", "💬 Total comments this run"), tr("每人 1 條,評論在他的第一條作品上 · 0 = 不評論 · 最多 300", "1 comment each, on their first post · 0 = off · max 300"), "_lComment")
+            numRow(tr("👍 本次點讚目標", "👍 Like target this run"), tr("每個潛客都點(最多 2 條作品);不夠這個數會回評論區給潛客的留言補讚 · 0 = 不點讚", "Every lead is liked (up to 2 posts); short of this, the run likes their comments · 0 = off"), "_lLike")
+            numRow(tr("👤 本次關注最大數量", "👤 Total follows this run"), tr("還有額度就關注 · 0 = 不關注 · 最多 100", "Follows while the total lasts · 0 = off · max 100"), "_lFollow")
+            numRow(tr("💬 本次評論最大數量", "💬 Total comments this run"), tr("還有額度就在他第一條作品下評論一條 · 0 = 不評論 · 最多 100", "Comments on their first post while the total lasts · 0 = off · max 100"), "_lComment")
             add(box)
-            add(ui.sub(tr("每個潛客只做 1 個動作:點讚 / 關注 / 評論三選一,做完就不再碰他。三樣的總量按剩餘比例輪流分配。",
-                "Each lead gets exactly one action: like, follow or comment. The totals are shared out by what is left of each.")), bottom = 20)
+            add(ui.sub(tr("採集不設上限:評論區的人全部收(收過的不重複收),每收滿 100 人先互動這一批再接著收。只互動這次收到的人,每人一次:有關注額度就關注、點他第一條作品和下一條的讚、有評論額度就評論;私密號 / 沒作品的跳過。",
+                "No cap on collecting; every 100 leads the run engages that batch, then goes on. Only this run's leads, once each: follow while the total lasts, like their first post and the next, comment while the total lasts; private / empty accounts are skipped.")), bottom = 20)
             if (leadCmtOn) drawCmt(true)
         }
 
@@ -1581,14 +1580,14 @@ class MainActivity : AppCompatActivity() {
                 out.put("max_likes", ml ?: 1000).put("max_comments", mc ?: 300).put("max_follows", 0)
             } else {
                 fun n(k: String, lo: Int, hi: Int) = (d.optString(k).trim().toIntOrNull() ?: lo).coerceIn(lo, hi)
-                val ll = n("_lLike", 0, 500); val lf = n("_lFollow", 0, 100); val lc = n("_lComment", 0, 300)
+                val ll = n("_lLike", 0, 5000); val lf = n("_lFollow", 0, 100); val lc = n("_lComment", 0, 100)
                 if (ll + lf + lc == 0) { toast(tr("點讚、關注、評論至少一項大於 0", "Set at least one of likes, follows, comments above 0")); return null }
                 val ai = d.optBoolean("_ai", true)
                 val funnel = lines(d.optString("_funnel")).take(20).map { it.take(120) }
                 if (lc > 0 && !ai && funnel.isEmpty()) { toast(tr("關掉 AI 評論時請至少填一句引流語", "With AI comments off, add at least one funnel line")); return null }
                 cfg.put("level", "").put("mode", if (kwMode) "keywords" else "accounts")
                     .put("seed_accounts", JSONArray(targets)).put("keywords", JSONArray(words))
-                    .put("leads_per_run", n("_nLeads", 1, 300))
+                    .put("cl_like_nolimit", true)   // 點讚是目標,運行上限裡不封頂
                     .put("lead_do_like", ll > 0).put("lead_do_follow", lf > 0).put("lead_do_comment", lc > 0)
                     .put("cl_ai_comment", ai).put("cl_funnel", JSONArray(funnel))
                     .put("cl_funnel_rewrite", d.optBoolean("_rw", true))
