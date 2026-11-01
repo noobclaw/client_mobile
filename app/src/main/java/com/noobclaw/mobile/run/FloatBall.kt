@@ -63,7 +63,9 @@ object FloatBall {
     private var lastRunning = false
 
     /** Gap between the ball and the screen edge (not flush against the edge). */
-    private fun EDGE() = dp(16)
+    private fun EDGE() = 0          // 贴边
+    private const val TAB_W = 54
+    private const val TAB_H = 44
     private fun dp(v: Int): Int = (v * (app?.resources?.displayMetrics?.density ?: 2f)).toInt()
     private val screenW get() = app?.resources?.displayMetrics?.widthPixels ?: 1080
     private val screenH get() = app?.resources?.displayMetrics?.heightPixels ?: 1920
@@ -119,19 +121,12 @@ object FloatBall {
 
     private fun buildBar() {
         val c = app ?: return
-        val box = FrameLayout(c)
-        val rg = View(c).apply {
-            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setStroke(dp(3), Color.parseColor("#00FF88")); setColor(Color.TRANSPARENT) }
-            visibility = View.GONE
-        }
-        box.addView(rg, FrameLayout.LayoutParams(dp(52), dp(52), Gravity.CENTER))
-        val white = FrameLayout(c).apply {
-            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.WHITE) }
-            elevation = dp(4).toFloat()
-        }
-        white.addView(ImageView(c).apply { setImageResource(R.mipmap.ic_launcher_round); scaleType = ImageView.ScaleType.FIT_CENTER },
+        // 贴边的横条:靠屏幕那一侧是直边,另一侧是半圆(看起来像个可以拉出来的把手)
+        val box = FrameLayout(c).apply { elevation = dp(4).toFloat() }
+        box.addView(ImageView(c).apply { setImageResource(R.mipmap.ic_launcher_round); scaleType = ImageView.ScaleType.FIT_CENTER },
             FrameLayout.LayoutParams(dp(30), dp(30), Gravity.CENTER))
-        box.addView(white, FrameLayout.LayoutParams(dp(44), dp(44), Gravity.CENTER))
+        val rg = View(c).apply { visibility = View.GONE }   // 运行中的绿色描边(同形状)
+        box.addView(rg, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
         val p = TextView(c).apply {
             setTextColor(Color.WHITE); textSize = 11f; typeface = Typeface.DEFAULT_BOLD
@@ -160,15 +155,28 @@ object FloatBall {
         refresh()
     }
 
+    /** Tab shape for the current edge: flat on the screen side, half-round on the other. */
+    private fun tabShape(fill: Int, stroke: Int?): GradientDrawable {
+        val r = dp(TAB_H / 2).toFloat()
+        return GradientDrawable().apply {
+            cornerRadii = if (right) floatArrayOf(r, r, 0f, 0f, 0f, 0f, r, r) else floatArrayOf(0f, 0f, r, r, r, r, 0f, 0f)
+            setColor(fill)
+            if (stroke != null) setStroke(dp(3), stroke)
+        }
+    }
+
     private fun arrangeRow() {
         val row = bar ?: return
         val box = ballBox ?: return
         val p = pill ?: return
+        box.background = tabShape(Color.WHITE, null)
+        ring?.background = tabShape(Color.TRANSPARENT, Color.parseColor("#00FF88"))
         row.removeAllViews()
         val gap = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
             if (right) marginEnd = dp(4) else marginStart = dp(4)
         }
-        if (right) { row.addView(p, gap); row.addView(box) } else { row.addView(box); row.addView(p, gap) }
+        val boxLp = LinearLayout.LayoutParams(dp(TAB_W), dp(TAB_H))
+        if (right) { row.addView(p, gap); row.addView(box, boxLp) } else { row.addView(box, boxLp); row.addView(p, gap) }
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -183,7 +191,7 @@ object FloatBall {
                     if (!dragging && (abs(e.rawX - downX) > slop || abs(e.rawY - downY) > slop)) { dragging = true; closePopup() }
                     if (dragging) {
                         lp.gravity = Gravity.TOP or Gravity.START
-                        lp.x = (e.rawX - dp(26)).toInt().coerceIn(0, screenW - dp(52))
+                        lp.x = (e.rawX - dp(TAB_W / 2)).toInt().coerceIn(0, screenW - dp(TAB_W))
                         lp.y = (startY + (e.rawY - downY)).toInt().coerceIn(0, screenH - dp(60))
                         runCatching { wm?.updateViewLayout(bar, lp) }
                     }
@@ -237,8 +245,8 @@ object FloatBall {
     /** Centre of the ball on screen. */
     private fun ballCenter(): Pair<Int, Int> {
         val lp = barLp
-        val y = (lp?.y ?: 0) + dp(26)
-        val x = if (right) screenW - EDGE() - dp(26) else EDGE() + dp(26)
+        val y = (lp?.y ?: 0) + dp(TAB_H / 2)
+        val x = if (right) screenW - EDGE() - dp(TAB_W / 2) else EDGE() + dp(TAB_W / 2)
         return x to y
     }
 
