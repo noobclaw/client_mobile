@@ -984,11 +984,7 @@ class MainActivity : AppCompatActivity() {
             rc.addView(row)
         }
         add(rc, bottom = 12)
-        val anyRun = RunService.runningTaskId != null
-        add(ui.link(tr("試跑（不扣費）", "Dry run (free)"), C.SUB) {
-            if (RunService.runningTaskId != null) return@link
-            withRunPerms { RunService.start(this, RunService.ACTION_DRY_RUN, id); toast(tr("試跑開始", "Dry run started")) }
-        }.apply { gravity = Gravity.CENTER; isEnabled = !anyRun; alpha = if (anyRun) 0.35f else 1f })
+        // 「試跑」入口去掉(2026-11-01)
     }
 
     private fun showRunSteps(r: JSONObject) {
