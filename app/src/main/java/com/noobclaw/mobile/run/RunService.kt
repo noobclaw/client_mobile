@@ -186,7 +186,7 @@ class RunService : Service() {
             val id = task.optString("id")
             val due = Schedule.due(task, ZonedDateTime.now(), doneSlots(), "#$id", Prefs.lastStart(id)) ?: continue
             val key = due.slotKey
-            if (Schedule.kind(task) is Schedule.Kind.Daily) markSlotDone(key) // mark first: a crash mid-run never re-runs the same slot
+            if (Schedule.kind(task).let { it is Schedule.Kind.Daily || it is Schedule.Kind.Random }) markSlotDone(key) // mark first: a crash mid-run never re-runs the same slot
             else {
                 // every N h: the start time is written when the run really starts; a skipped run retries after 15 min
                 val tried = lastTry[id] ?: 0L

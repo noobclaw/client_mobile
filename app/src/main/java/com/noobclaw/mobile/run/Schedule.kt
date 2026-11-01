@@ -28,7 +28,30 @@ object Schedule {
     sealed class Kind {
         data class Every(val hours: Double) : Kind()
         data class Daily(val at: LocalTime) : Kind()
+        /** Once a day at a random time between [from] and [to] (same time on the server: hash of task id + date). */
+        data class Random(val from: LocalTime, val to: LocalTime) : Kind()
         object Manual : Kind()
+    }
+
+    /**
+     * Today's time of a "random" task: from + (hash("taskId|yyyy-MM-dd") mod window minutes).
+     * The server computes the same hash (mobile.ts randomAt), so the desktop shows the same next run.
+     */
+    fun randomAt(task: JSONObject, date: LocalDate, k: Kind.Random): LocalTime {
+        val a = k.from.hour * 60 + k.from.minute
+        var b = k.to.hour * 60 + k.to.minute
+        if (b <= a) b = a + 1
+        var h = 0L
+        for (c in task.optString("id") + "|" + date.toString()) h = (h * 31 + c.code) and 0xffffffffL
+        val m = a + (h % (b - a)).toInt()
+        return LocalTime.of((m / 60).coerceIn(0, 23), m % 60)
+    }
+
+    /** The day's fixed time for daily / random tasks; null for the others. */
+    fun dayTime(task: JSONObject, date: LocalDate, k: Kind): LocalTime? = when (k) {
+        is Kind.Daily -> k.at
+        is Kind.Random -> randomAt(task, date, k)
+        else -> null
     }
 
     fun zone(task: JSONObject): ZoneId = runCatching { ZoneId.of(task.optString("tz", "UTC")) }.getOrDefault(ZoneId.of("UTC"))
@@ -48,6 +71,9 @@ object Schedule {
                 return Kind.Every(if (EVERY_HOURS.any { it == h }) h else 3.0)
             }
             "daily" -> return Kind.Daily(runCatching { LocalTime.parse(s.optString("at")) }.getOrDefault(LocalTime.of(9, 30)))
+            "random" -> return Kind.Random(
+                runCatching { LocalTime.parse(s.optString("from")) }.getOrDefault(LocalTime.of(9, 0)),
+                runCatching { LocalTime.parse(s.optString("to")) }.getOrDefault(LocalTime.of(22, 0)))
             "manual" -> return Kind.Manual
         }
         val sl = slots(task)
@@ -58,6 +84,7 @@ object Schedule {
     fun toJson(k: Kind): JSONObject = when (k) {
         is Kind.Every -> JSONObject().put("kind", "every").put("hours", if (k.hours == Math.floor(k.hours)) k.hours.toInt() as Any else k.hours)
         is Kind.Daily -> JSONObject().put("kind", "daily").put("at", hm(k.at.hour, k.at.minute))
+        is Kind.Random -> JSONObject().put("kind", "random").put("from", hm(k.from.hour, k.from.minute)).put("to", hm(k.to.hour, k.to.minute))
         Kind.Manual -> JSONObject().put("kind", "manual")
     }
 
@@ -76,9 +103,9 @@ object Schedule {
                 val t = local.toLocalTime()
                 return Due("${local.toLocalDate()}@" + hm(t.hour, t.minute) + suffix)
             }
-            is Kind.Daily -> {
+            is Kind.Daily, is Kind.Random -> {
                 val today: LocalDate = local.toLocalDate()
-                val slot = k.at
+                val slot = dayTime(task, today, k) ?: return null
                 val at = ZonedDateTime.of(today, slot, local.zone)
                 val key = "$today@$slot$suffix"
                 if (key in done) return null
@@ -96,16 +123,20 @@ object Schedule {
         return when (val k = kind(task)) {
             Kind.Manual -> null
             is Kind.Every -> sane(lastStart, nowMs).let { last -> if (last == null) nowMs else maxOf(nowMs, last + (k.hours * 3_600_000).toLong()) }
-            is Kind.Daily -> {
+            is Kind.Daily, is Kind.Random -> {
                 val local = now.withZoneSameInstant(zone(task))
                 val today = local.toLocalDate()
-                val at = ZonedDateTime.of(today, k.at, local.zone)
-                val key = "$today@${k.at}#" + task.optString("id")
+                val t0 = dayTime(task, today, k) ?: return null
+                val at = ZonedDateTime.of(today, t0, local.zone)
+                val key = "$today@$t0#" + task.optString("id")
                 val lateMin = java.time.Duration.between(at, local).toMinutes()
                 when {
                     lateMin < 0 -> at.toInstant().toEpochMilli()
                     lateMin <= CATCH_UP_MINUTES && key !in done -> nowMs
-                    else -> at.plusDays(1).toInstant().toEpochMilli()
+                    else -> {
+                        val tomorrow = today.plusDays(1)
+                        ZonedDateTime.of(tomorrow, dayTime(task, tomorrow, k) ?: t0, local.zone).toInstant().toEpochMilli()
+                    }
                 }
             }
         }

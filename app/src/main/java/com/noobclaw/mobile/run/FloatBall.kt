@@ -62,6 +62,8 @@ object FloatBall {
     private var right = false                      // which edge the ball sits on
     private var lastRunning = false
 
+    /** Gap between the ball and the screen edge (not flush against the edge). */
+    private fun EDGE() = dp(16)
     private fun dp(v: Int): Int = (v * (app?.resources?.displayMetrics?.density ?: 2f)).toInt()
     private val screenW get() = app?.resources?.displayMetrics?.widthPixels ?: 1080
     private val screenH get() = app?.resources?.displayMetrics?.heightPixels ?: 1920
@@ -149,7 +151,7 @@ object FloatBall {
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or (if (right) Gravity.END else Gravity.START)
-            x = dp(2)
+            x = EDGE()
             y = (prefs()?.getInt("fb2_y", -1) ?: -1).takeIf { it >= 0 } ?: (screenH * 0.14).toInt()
         }
         barLp = lp
@@ -191,7 +193,7 @@ object FloatBall {
                     if (dragging) {
                         right = e.rawX > screenW / 2f
                         lp.gravity = Gravity.TOP or (if (right) Gravity.END else Gravity.START)
-                        lp.x = dp(2)
+                        lp.x = EDGE()
                         arrangeRow()
                         runCatching { wm?.updateViewLayout(bar, lp) }
                         prefs()?.edit()?.putBoolean("fb2_right", right)?.putInt("fb2_y", lp.y)?.apply()
@@ -236,7 +238,7 @@ object FloatBall {
     private fun ballCenter(): Pair<Int, Int> {
         val lp = barLp
         val y = (lp?.y ?: 0) + dp(26)
-        val x = if (right) screenW - dp(2) - dp(26) else dp(2) + dp(26)
+        val x = if (right) screenW - EDGE() - dp(26) else EDGE() + dp(26)
         return x to y
     }
 

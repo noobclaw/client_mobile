@@ -41,6 +41,7 @@
         <service
             android:name=".a11y.NcAccessibilityService"
             android:exported="false"
+            android:icon="@mipmap/ic_launcher_round"
             android:label="@string/a11y_label"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
             <intent-filter>

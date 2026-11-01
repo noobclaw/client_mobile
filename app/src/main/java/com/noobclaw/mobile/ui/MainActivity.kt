@@ -723,6 +723,7 @@ class MainActivity : AppCompatActivity() {
             else -> tr("每 ${k.hours.toInt()} 小時", "Every ${k.hours.toInt()} hours")
         }
         is Schedule.Kind.Daily -> tr("每天 ", "Daily at ") + hm(k.at.hour, k.at.minute)
+        is Schedule.Kind.Random -> tr("每天隨機 ", "Daily, random ") + hm(k.from.hour, k.from.minute) + "–" + hm(k.to.hour, k.to.minute)
         Schedule.Kind.Manual -> tr("手動", "Manual")
     }
 
@@ -1378,12 +1379,13 @@ class MainActivity : AppCompatActivity() {
                 tr("每3小時", "3 hours") to Schedule.Kind.Every(3.0),
                 tr("每6小時", "6 hours") to Schedule.Kind.Every(6.0),
                 tr("每天定時", "Daily") to Schedule.Kind.Daily((kind as? Schedule.Kind.Daily)?.at ?: LocalTime.of(9, 30)),
+                tr("每天隨機", "Daily random") to ((kind as? Schedule.Kind.Random) ?: Schedule.Kind.Random(LocalTime.of(9, 0), LocalTime.of(22, 0))),
                 tr("手動", "Manual") to Schedule.Kind.Manual,
             )
             opts.chunked(3).forEach { rowOpts ->
                 val r = ui.row()
                 rowOpts.forEachIndexed { i, (lab, k) ->
-                    val on = when { k is Schedule.Kind.Daily -> kind is Schedule.Kind.Daily; else -> k == kind }
+                    val on = when { k is Schedule.Kind.Daily -> kind is Schedule.Kind.Daily; k is Schedule.Kind.Random -> kind is Schedule.Kind.Random; else -> k == kind }
                     r.addView(ui.chip(lab, on) { kind = k; d.put("schedule", Schedule.toJson(k)); drawSched() }.apply { textSize = 13f; setPadding(ui.dp(6), ui.dp(10), ui.dp(6), ui.dp(10)) },
                         ui.weight().apply { if (i < 2) marginEnd = ui.dp(8) })
                 }
@@ -1398,9 +1400,25 @@ class MainActivity : AppCompatActivity() {
                     }, k.at.hour, k.at.minute, true).show()
                 }, ui.lp(top = 2))
             }
+            if (k is Schedule.Kind.Random) {
+                // 隨機時間的範圍:開始 / 結束各一個時間選擇
+                val rr = ui.row()
+                fun pick(isFrom: Boolean) {
+                    val cur = if (isFrom) k.from else k.to
+                    TimePickerDialog(this, android.R.style.Theme_DeviceDefault_Dialog, { _, hh, mm ->
+                        val t = LocalTime.of(hh, mm)
+                        kind = if (isFrom) Schedule.Kind.Random(t, k.to) else Schedule.Kind.Random(k.from, t)
+                        d.put("schedule", Schedule.toJson(kind)); drawSched()
+                    }, cur.hour, cur.minute, true).show()
+                }
+                rr.addView(ui.secondary(tr("從 ", "From ") + hm(k.from.hour, k.from.minute)) { pick(true) }, ui.weight().apply { marginEnd = ui.dp(8) })
+                rr.addView(ui.secondary(tr("到 ", "To ") + hm(k.to.hour, k.to.minute)) { pick(false) }, ui.weight())
+                schedBox.addView(rr, ui.lp(top = 2))
+            }
             schedBox.addView(ui.sub(when (k) {
                 is Schedule.Kind.Every -> tr("從上次開始時間算起，到點自動運行", "Starts again this long after the last start")
                 is Schedule.Kind.Daily -> tr("錯過時間 2 小時內會補跑", "Catches up within 2 hours if missed")
+                is Schedule.Kind.Random -> tr("每天在這個時間段裡隨機挑一個時間運行一次", "Runs once a day at a random time in this window")
                 Schedule.Kind.Manual -> tr("只在你點「運行」或電腦端發起時運行", "Runs only when you tap Run or start it from the desktop")
             }), ui.lp(top = 4))
         }
