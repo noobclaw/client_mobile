@@ -274,10 +274,28 @@ object FloatBall {
             val c = lp?.optJSONObject("counts") ?: JSONObject()
             // 检测账号不是任务:不显示点赞数 / 计时,只提示正在读账号
             p.text = if (RunService.runningTaskId == "detect") tr("正在讀取帳號…", "Reading the account…")
-                else countsLine(c, lp?.optJSONObject("targets"), taskById(RunService.runningTaskId), withCap = false, sep = "  ") + " · ${elapsed()}"
+                else withNow(countsLine(c, lp?.optJSONObject("targets"), taskById(RunService.runningTaskId), withCap = false, sep = "  ") + " · ${elapsed()}",
+                    nowLine(lp))
             p.visibility = View.VISIBLE
         } else if (System.currentTimeMillis() > hintUntil || popupKind == "menu") p.visibility = View.GONE
         if (popupKind == "progress") fillProgress()
+    }
+
+    /** Second line of the capsule: 「等待 12 秒」 during a wait, else the latest step (what it is doing now). */
+    private fun nowLine(lp: JSONObject?): String {
+        val left = ((lp?.optLong("sleep_until") ?: 0L) - System.currentTimeMillis()) / 1000
+        if (left >= 1) return tr("等待 ${left} 秒", "Waiting ${left}s")
+        val runId = RunService.runningRunId ?: return ""
+        return RunLog.recent().lastOrNull { it.runId == runId && it.level == "step" }?.let { Steps.text(it.msg) }?.take(28) ?: ""
+    }
+    private fun withNow(main: String, now: String): CharSequence {
+        if (now.isEmpty()) return main
+        val s = android.text.SpannableString(main + "\n" + now)
+        val st = main.length + 1
+        s.setSpan(android.text.style.RelativeSizeSpan(0.85f), st, s.length, 0)
+        s.setSpan(android.text.style.ForegroundColorSpan(Color.parseColor("#B3FFFFFF")), st, s.length, 0)
+        s.setSpan(android.text.style.StyleSpan(Typeface.NORMAL), st, s.length, 0)
+        return s
     }
 
     private fun elapsed(): String {

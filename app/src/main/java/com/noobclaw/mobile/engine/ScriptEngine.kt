@@ -113,8 +113,11 @@ class ScriptEngine(
         .replace(Regex("\\s{2,}"), " ").trim().take(120)
 
     /** Live numbers for the heartbeat `progress` and the run view (safe to call from any thread). */
+    /** End of the script's current wait (0 = not waiting), for the float ball's "what now" line. */
+    @Volatile var sleepUntil = 0L
     fun progress(): JSONObject = synchronized(statLock) {
         JSONObject().put("counts", JSONObject(counts.toString())).put("targets", JSONObject(targets.toString())).put("credits", credits)
+            .put("sleep_until", sleepUntil)
     }
 
     suspend fun run(): JSONObject {
@@ -331,7 +334,8 @@ const ctx = Object.freeze({
                 }
                 "sleep" -> {
                     var left = a.optLong("ms", 0).coerceIn(0, 10 * 60_000)
-                    while (left > 0 && !abortRequested) { val s = minOf(left, 500); delay(s); left -= s }
+                    sleepUntil = if (left >= 2500) System.currentTimeMillis() + left else 0L   // the ball shows 「等待 Ns」
+                    try { while (left > 0 && !abortRequested) { val s = minOf(left, 500); delay(s); left -= s } } finally { sleepUntil = 0L }
                     ok(!abortRequested)
                 }
                 "aborted" -> ok(abortRequested)
