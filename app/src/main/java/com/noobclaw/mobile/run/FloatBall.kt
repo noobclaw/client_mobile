@@ -238,7 +238,13 @@ object FloatBall {
                         arrangeRow()
                         runCatching { wm?.updateViewLayout(bar, lp) }
                         prefs()?.edit()?.putBoolean("fb3_right", right)?.putInt("fb3_y", lp.y)?.apply()
-                    } else if (e.actionMasked == MotionEvent.ACTION_UP) openMenu()
+                    } else if (e.actionMasked == MotionEvent.ACTION_UP) {
+                        // 測試版:按住 2 秒不動 = 抓取當前畫面結構(用來校準抖音 / 小紅書 / TikTok 的按鈕),正式版沒有
+                        if (com.noobclaw.mobile.BuildConfig.DEBUG && e.eventTime - e.downTime > 2000) {
+                            v.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                            app?.let { RunService.start(it, RunService.ACTION_CAPTURE_NOW) }
+                        } else openMenu()
+                    }
                     true
                 }
                 else -> false
