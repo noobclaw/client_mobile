@@ -63,9 +63,9 @@ object FloatBall {
     private var lastRunning = false
 
     /** Gap between the ball and the screen edge (not flush against the edge). */
-    private fun EDGE() = dp(4)      // 离边 4dp(完全贴边时圆角被屏幕切掉,像缺了一块)
-    private const val TAB_W = 54
-    private const val TAB_H = 44
+    private fun EDGE() = dp(8)      // 离边 8dp
+    private const val TAB_W = 50    // 方案 A:深色玻璃圆角方块(像 iOS 小白点)
+    private const val TAB_H = 50
     private fun dp(v: Int): Int = (v * (app?.resources?.displayMetrics?.density ?: 2f)).toInt()
     private val screenW get() = app?.resources?.displayMetrics?.widthPixels ?: 1080
     private val screenH get() = app?.resources?.displayMetrics?.heightPixels ?: 1920
@@ -124,7 +124,7 @@ object FloatBall {
         // 贴边的横条:靠屏幕那一侧是直边,另一侧是半圆(看起来像个可以拉出来的把手)
         val box = FrameLayout(c).apply { elevation = dp(4).toFloat() }
         box.addView(ImageView(c).apply { setImageResource(R.mipmap.ic_launcher_round); scaleType = ImageView.ScaleType.FIT_CENTER },
-            FrameLayout.LayoutParams(dp(30), dp(30), Gravity.CENTER))
+            FrameLayout.LayoutParams(dp(32), dp(32), Gravity.CENTER))
         val rg = View(c).apply { visibility = View.GONE }   // 运行中的绿色描边(同形状)
         box.addView(rg, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
@@ -157,12 +157,11 @@ object FloatBall {
 
     /** Tab shape for the current edge: flat on the screen side, half-round on the other. */
     private fun tabShape(fill: Int, stroke: Int?): GradientDrawable {
-        // 外侧半圆,贴边那侧也带一点小圆角 + 细灰边:直角贴边看起来像「缺了一块」
-        val r = dp(TAB_H / 2).toFloat(); val e = dp(10).toFloat()
+        // 半透明深色圆角方块 + 细亮边;运行中的绿色描边是同形状的另一层
         return GradientDrawable().apply {
-            cornerRadii = if (right) floatArrayOf(r, r, e, e, e, e, r, r) else floatArrayOf(e, e, r, r, r, r, e, e)
+            cornerRadius = dp(16).toFloat()
             setColor(fill)
-            if (stroke != null) setStroke(dp(3), stroke) else setStroke(dp(1), Color.parseColor("#33000000"))
+            if (stroke != null) setStroke(dp(2), stroke) else setStroke(dp(1), Color.parseColor("#24FFFFFF"))
         }
     }
 
@@ -170,7 +169,7 @@ object FloatBall {
         val row = bar ?: return
         val box = ballBox ?: return
         val p = pill ?: return
-        box.background = tabShape(Color.WHITE, null)
+        box.background = tabShape(Color.parseColor("#B8141620"), null)
         ring?.background = tabShape(Color.TRANSPARENT, Color.parseColor("#00FF88"))
         row.removeAllViews()
         val gap = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
