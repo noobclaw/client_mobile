@@ -63,7 +63,7 @@ object FloatBall {
     private var lastRunning = false
 
     /** Gap between the ball and the screen edge (not flush against the edge). */
-    private fun EDGE() = 0          // 贴边
+    private fun EDGE() = dp(4)      // 离边 4dp(完全贴边时圆角被屏幕切掉,像缺了一块)
     private const val TAB_W = 54
     private const val TAB_H = 44
     private fun dp(v: Int): Int = (v * (app?.resources?.displayMetrics?.density ?: 2f)).toInt()
@@ -157,11 +157,12 @@ object FloatBall {
 
     /** Tab shape for the current edge: flat on the screen side, half-round on the other. */
     private fun tabShape(fill: Int, stroke: Int?): GradientDrawable {
-        val r = dp(TAB_H / 2).toFloat()
+        // 外侧半圆,贴边那侧也带一点小圆角 + 细灰边:直角贴边看起来像「缺了一块」
+        val r = dp(TAB_H / 2).toFloat(); val e = dp(10).toFloat()
         return GradientDrawable().apply {
-            cornerRadii = if (right) floatArrayOf(r, r, 0f, 0f, 0f, 0f, r, r) else floatArrayOf(0f, 0f, r, r, r, r, 0f, 0f)
+            cornerRadii = if (right) floatArrayOf(r, r, e, e, e, e, r, r) else floatArrayOf(e, e, r, r, r, r, e, e)
             setColor(fill)
-            if (stroke != null) setStroke(dp(3), stroke)
+            if (stroke != null) setStroke(dp(3), stroke) else setStroke(dp(1), Color.parseColor("#33000000"))
         }
     }
 
