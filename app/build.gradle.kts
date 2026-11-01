@@ -11,8 +11,8 @@ android {
         applicationId = "com.noobclaw.mobile"
         minSdk = 29          // Android 10; screenshots/OCR fallback need 30+ (checked at runtime)
         targetSdk = 34
-        versionCode = 22
-        versionName = "0.8.0"
+        versionCode = 23
+        versionName = "0.8.1"
         // Backend base URL; override with -PapiBase=https://... for staging builds.
         buildConfigField("String", "API_BASE", "\"${project.findProperty("apiBase") ?: "https://api.noobclaw.com"}\"")
         // Capability API version of the ctx bridge. Scripts declare capability_api_min.

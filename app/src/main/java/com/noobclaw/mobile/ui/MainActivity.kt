@@ -1049,7 +1049,7 @@ class MainActivity : AppCompatActivity() {
             if (missing.isEmpty()) C.ACCENT else C.WARN) { go(Screen.PERMS) }
         item(tr("語言", "Language"), I18n.lang.label) { chooseLanguage() }
         // 「運行記錄」「聯繫客服」兩行去掉(2026-11-01 用戶要求;運行明細在電腦端看)
-        item(tr("版本", "Version"), "v${BuildConfig.VERSION_NAME}（${BuildConfig.VERSION_CODE}）", divider = false, onClick = null)
+        item(tr("檢查更新", "Check for updates"), "v${BuildConfig.VERSION_NAME}", divider = false) { manualUpdateCheck() }
         add(list, bottom = 18)
 
         add(ui.secondary(tr("退出登錄", "Log out"), C.DANGER) { logout() })
@@ -1119,6 +1119,20 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             val rel = Updater.check() ?: return@launch
             if (isFinishing || isDestroyed) return@launch
+            updateRel = rel
+            if (updateDialog?.isShowing != true) showUpdateDialog(rel)
+        }
+    }
+
+    /** 「我的 → 檢查更新」:有新版本就彈更新窗,否則提示已是最新。 */
+    private fun manualUpdateCheck() {
+        if (updateBusy) { updateDialog?.takeIf { !it.isShowing }?.show(); return }
+        toast(tr("正在檢查…", "Checking…"))
+        lifecycleScope.launch {
+            updateCheckedAt = System.currentTimeMillis()
+            val rel = Updater.check()
+            if (isFinishing || isDestroyed) return@launch
+            if (rel == null) { toast(tr("已是最新版本 v${BuildConfig.VERSION_NAME}", "You're up to date (v${BuildConfig.VERSION_NAME})")); return@launch }
             updateRel = rel
             if (updateDialog?.isShowing != true) showUpdateDialog(rel)
         }
