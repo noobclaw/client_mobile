@@ -42,6 +42,8 @@ class RunService : Service() {
     @Volatile private var captureJob: Job? = null
     @Volatile private var engine: ScriptEngine? = null
     @Volatile private var notifJob: Job? = null
+    @Volatile private var serverTasksAt = false     // 服务器支持 tasks_at(任务改动即时通知)
+    @Volatile private var nextHbMs = HEARTBEAT_MS   // 服务器给的下次心跳间隔
     @Volatile private var lastTasksAt = 0L          // 服務器任務列表的最後修改時間(心跳帶回)
     private val lastTry = HashMap<String, Long>() // every-N tasks: last time the scheduler tried to start them
     private val slotRejectedAt = HashMap<String, Long>() // task id → when the server refused it for concurrency_limit
@@ -100,16 +102,22 @@ class RunService : Service() {
             .build()
 
     private suspend fun mainLoop() {
-        var tick = 0
+        var lastFetch = 0L
+        var lastCompliance = 0L
         while (scope.isActive) {
             runCatching { heartbeat() }.onFailure { RunLog.w(tr("心跳失敗：", "Heartbeat failed: ") + it.message) }
-            // Task list from the server every 4th tick (60 s); schedule check every tick on the cached list.
-            val fetch = tick % TASK_REFRESH_TICKS == 0
-            if (tick % COMPLIANCE_TICKS == 0) runCatching { Api.refreshCompliance() } // compliance switch every 30 min
-            tick++
+            val now = System.currentTimeMillis()
+            // 任务列表:服务器会在心跳里告诉我们它改过没有(tasks_at,改了马上拉),所以只需每 5 分钟兜底拉一次;
+            // 老服务器没有 tasks_at → 仍每分钟拉。排程每一圈都用本地缓存检查。
+            val fetchEvery = if (serverTasksAt) TASK_FETCH_MS else 60_000L
+            val fetch = now - lastFetch >= fetchEvery
+            if (fetch) lastFetch = now
+            if (now - lastCompliance >= COMPLIANCE_MS) { lastCompliance = now; runCatching { Api.refreshCompliance() } }
             runCatching { refreshTaskAndMaybeRun(fetch) }.onFailure { RunLog.w(tr("排程檢查失敗：", "Schedule check failed: ") + it.message) }
             runCatching { uploadLogs() }
-            delay(HEARTBEAT_MS)
+            // 心跳间隔听服务器的(在跑 / 电脑端在看 = 15 秒,空闲更慢);在跑任务时本地也固定 15 秒,进度及时
+            val wait = if (currentRun?.isActive == true) HEARTBEAT_MS else nextHbMs
+            delay(wait)
         }
     }
 
@@ -146,6 +154,7 @@ class RunService : Service() {
                 .put("cooldown_until", Prefs.cooldownUntil)
                 .put("progress", if (currentRun?.isActive == true) liveProgress() ?: JSONObject.NULL else JSONObject.NULL)
         )
+        nextHbMs = r.optLong("next_hb_ms", HEARTBEAT_MS).coerceIn(10_000L, 120_000L)
         // 會員可用手機數:超出的手機不跑任務(服務器也不下發劇本)。
         Prefs.overLimit = r.optBoolean("over_limit", false)
         Prefs.phoneLimit = r.optInt("phone_limit", 0)
@@ -155,6 +164,7 @@ class RunService : Service() {
             Prefs.flagsJson = f.toString()
             NcAccessibilityService.instance?.applyDevBubble(f.optBoolean("dev_bubble", false))
         }
+        serverTasksAt = r.has("tasks_at")
         val tasksAt = r.optLong("tasks_at", 0L)
         if (tasksAt > 0 && tasksAt != lastTasksAt) { lastTasksAt = tasksAt; refreshTasks() }
         // Run / stop requests sent from the desktop app ("我的手機").
@@ -428,8 +438,8 @@ class RunService : Service() {
         const val CONSENT_VERSION = 1
         const val NOTIF_ID = 42
         const val HEARTBEAT_MS = 15_000L
-        const val TASK_REFRESH_TICKS = 4
-        const val COMPLIANCE_TICKS = 120          // 120 × 15 s = 30 min
+        const val TASK_FETCH_MS = 5 * 60_000L     // 兜底拉任务列表(改动靠心跳里的 tasks_at 即时发现)
+        const val COMPLIANCE_MS = 30 * 60_000L    // compliance switch every 30 min
         const val RETRY_MS = 15 * 60_000L         // skipped "every N h" run: try again after 15 min
         const val SLOT_RETRY_MS = 5 * 60_000L     // refused because the plan's phones-at-once limit is full: retry after 5 min
         const val ACTION_RUN_NOW = "com.noobclaw.mobile.RUN_NOW"
