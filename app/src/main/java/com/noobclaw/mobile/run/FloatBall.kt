@@ -440,11 +440,12 @@ object FloatBall {
             else cfg?.optBoolean(cfgKey, true) ?: true
         fun cap(k: String) = if (withCap) targets?.optLong(k)?.takeIf { it in 1 until 100_000_000 }?.let { "/$it" } ?: "" else ""   // 不限数量 = 不显示 /上限
         val parts = mutableListOf<String>()
+        // 收藏 / 關注:這次要做(劇本設了目標)就從 0 開始顯示,和點讚、評論一樣
+        fun onT(k: String) = (targets?.optLong(k) ?: 0L) > 0 || c.optLong(k) > 0
         if (on("like", "cl_do_like")) parts += "👍 ${c.optLong("like")}${cap("like")}"
+        if (onT("favorite")) parts += "⭐ ${c.optLong("favorite")}${cap("favorite")}"
+        if (onT("follow")) parts += "➕ ${c.optLong("follow")}${cap("follow")}"
         if (on("comment", "cl_do_reply")) parts += "💬 ${c.optLong("comment")}${cap("comment")}"
-        // 收藏 / 關注 / 新潛客:有數字才顯示(互動漲粉、定向獲客)
-        if (c.optLong("favorite") > 0) parts += "⭐ ${c.optLong("favorite")}"
-        if (c.optLong("follow") > 0) parts += "➕ ${c.optLong("follow")}"
         if (c.optLong("lead_new") > 0) parts += "👤 ${c.optLong("lead_new")}"
         return parts.joinToString(sep).ifEmpty { "👍 0" }
     }
