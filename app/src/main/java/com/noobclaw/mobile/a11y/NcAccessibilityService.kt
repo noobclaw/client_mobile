@@ -19,7 +19,8 @@ class NcAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         instance = this
         RunLog.i(com.noobclaw.mobile.util.tr("無障礙服務已連接", "Accessibility service connected"))
-        if (com.noobclaw.mobile.BuildConfig.DEBUG) showDevBubble()
+        // 「抓」校准悬浮钮不再显示(用户装的就是 debug 包,会看到它);需要校准时临时打开这一行
+        // if (com.noobclaw.mobile.BuildConfig.DEBUG) showDevBubble()
     }
 
     private var bubble: android.view.View? = null
