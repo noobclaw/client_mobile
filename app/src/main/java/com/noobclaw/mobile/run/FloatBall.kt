@@ -252,7 +252,7 @@ object FloatBall {
         val c = app ?: return null
         closePopup()
         val layer = FrameLayout(c).apply {
-            setBackgroundColor(if (dim) Color.parseColor("#73000000") else Color.TRANSPARENT)
+            setBackgroundColor(if (dim) Color.parseColor("#D9000000") else Color.TRANSPARENT)
             setOnClickListener { closePopup() }
         }
         val lp = WindowManager.LayoutParams(
