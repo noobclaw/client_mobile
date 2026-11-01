@@ -1046,7 +1046,23 @@ class MainActivity : AppCompatActivity() {
 
     // ---------- tab 2: me ----------
     private fun renderMe() {
-        add(ui.text(tr("我的", "Me"), 26f, C.TEXT, true), bottom = 18)
+        // 標題 + 右上角「⋮」(退出登錄收進這裡,不那麼顯眼)
+        val head = ui.row()
+        head.addView(ui.text(tr("我的", "Me"), 26f, C.TEXT, true), ui.weight())
+        head.addView(ui.text("⋮", 24f, C.SUB, true).apply {
+            gravity = Gravity.CENTER; setPadding(ui.dp(12), ui.dp(2), ui.dp(4), ui.dp(2))
+            contentDescription = tr("更多", "More")
+            setOnClickListener { v ->
+                val pm = android.widget.PopupMenu(this@MainActivity, v)
+                pm.menu.add(tr("退出登錄", "Log out"))
+                pm.setOnMenuItemClickListener {
+                    confirm(tr("退出登錄？", "Log out?"), tr("退出後這臺手機不再運行任務，重新登錄即可恢復。", "This phone stops running tasks until you log in again."), tr("退出", "Log out")) { logout() }
+                    true
+                }
+                pm.show()
+            }
+        })
+        add(head, bottom = 18)
 
         // profile
         val prof = ui.card()
@@ -1096,7 +1112,6 @@ class MainActivity : AppCompatActivity() {
         item(tr("檢查更新", "Check for updates"), "v${BuildConfig.VERSION_NAME}", divider = false) { manualUpdateCheck() }
         add(list, bottom = 18)
 
-        add(ui.secondary(tr("退出登錄", "Log out"), C.DANGER) { logout() })
     }
 
     private fun planName(code: String) = when (code) {

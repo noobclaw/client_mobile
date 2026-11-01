@@ -61,6 +61,7 @@ object FloatBall {
 
     private var right = false                      // which edge the ball sits on
     private var lastRunning = false
+    private var hintUntil = 0L                     // 首次拖動提示顯示到這個時間
 
     /** Gap between the ball and the screen edge (not flush against the edge). */
     private fun EDGE() = dp(8)      // 离边 8dp
@@ -153,6 +154,7 @@ object FloatBall {
         attachDrag(box)
         runCatching { wm?.addView(row, lp) }.onFailure { bar = null; barLp = null; RunLog.w("懸浮球顯示失敗：${it.message}") }
         refresh()
+        showDragHintOnce()
     }
 
     /** Tab shape for the current edge: flat on the screen side, half-round on the other. */
@@ -179,6 +181,20 @@ object FloatBall {
         if (right) { row.addView(p, gap); row.addView(box, boxLp) } else { row.addView(box, boxLp); row.addView(p, gap) }
     }
 
+    /** First time only: a small bubble next to the button — "hold and drag to move, tap for the menu". */
+    private fun showDragHintOnce() {
+        val sp = prefs() ?: return
+        if (sp.getBoolean("fb_hint_shown", false)) return
+        sp.edit().putBoolean("fb_hint_shown", true).apply()
+        val p = pill ?: return
+        main.postDelayed({
+            if (running()) return@postDelayed
+            p.text = tr("按住可拖到別處 · 點一下打開菜單", "Hold to drag · tap for the menu")
+            p.visibility = View.VISIBLE
+            hintUntil = System.currentTimeMillis() + 6000   // refresh() 6 秒後自動收起
+        }, 800)
+    }
+
     @SuppressLint("ClickableViewAccessibility")
     private fun attachDrag(v: View) {
         val slop = ViewConfiguration.get(v.context).scaledTouchSlop
@@ -188,7 +204,11 @@ object FloatBall {
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> { downX = e.rawX; downY = e.rawY; startY = lp.y; dragging = false; true }
                 MotionEvent.ACTION_MOVE -> {
-                    if (!dragging && (abs(e.rawX - downX) > slop || abs(e.rawY - downY) > slop)) { dragging = true; closePopup() }
+                    if (!dragging && (abs(e.rawX - downX) > slop || abs(e.rawY - downY) > slop)) {
+                        dragging = true; closePopup()
+                        v.animate().scaleX(1.12f).scaleY(1.12f).alpha(1f).setDuration(120).start()   // 拿起來的感覺
+                        v.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                    }
                     if (dragging) {
                         lp.gravity = Gravity.TOP or Gravity.START
                         lp.x = (e.rawX - dp(TAB_W / 2)).toInt().coerceIn(0, screenW - dp(TAB_W))
@@ -199,6 +219,7 @@ object FloatBall {
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     if (dragging) {
+                        v.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
                         right = e.rawX > screenW / 2f
                         lp.gravity = Gravity.TOP or (if (right) Gravity.END else Gravity.START)
                         lp.x = EDGE()
@@ -232,7 +253,7 @@ object FloatBall {
             val c = lp?.optJSONObject("counts") ?: JSONObject()
             p.text = countsLine(c, lp?.optJSONObject("targets"), taskById(RunService.runningTaskId), withCap = false, sep = "  ") + " · ${elapsed()}"
             p.visibility = View.VISIBLE
-        } else p.visibility = View.GONE
+        } else if (System.currentTimeMillis() > hintUntil || popupKind == "menu") p.visibility = View.GONE
         if (popupKind == "progress") fillProgress()
     }
 
