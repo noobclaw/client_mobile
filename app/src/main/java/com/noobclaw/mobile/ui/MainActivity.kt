@@ -486,7 +486,7 @@ class MainActivity : AppCompatActivity() {
             }, 16f, C.TEXT, true))
             t.addView(ui.text(when (k) {
                 PermKind.A11Y -> tr("讓 NoobClaw 能替你在 TikTok 裡點讚、回覆。", "Lets NoobClaw tap and type in TikTok for you.")
-                PermKind.OVERLAY -> tr("運行時在屏幕上顯示停止按鈕，隨時能停。", "Shows a stop button on screen while a task runs.")
+                PermKind.OVERLAY -> tr("在屏幕邊上顯示 NoobClaw 懸浮球，能隨時啟動、停止、看進度。", "Shows the NoobClaw tab on screen to start, stop and see progress.")
                 PermKind.BATTERY -> tr("鎖屏或切到別的 App 時，任務也能按時運行。", "Keeps tasks on schedule when the screen is off or you switch apps.")
             }, 13f, C.SUB), ui.lp(top = 2))
             r.addView(t, ui.weight())
@@ -495,7 +495,8 @@ class MainActivity : AppCompatActivity() {
             card.addView(r)
 
             if (k == PermKind.A11Y && !ok) {
-                card.addView(ui.sub(tr("打開後找到「NoobClaw」，把開關打開。", "In the list, find \"NoobClaw\" and switch it on.")), ui.lp(top = 10))
+                card.addView(ui.sub(tr("打開後找到「NoobClaw」，只打開「使用 NoobClaw」這個開關；下面的「NoobClaw 快捷方式」不用打開（打開了屏幕上會多一個圓按鈕）。",
+                    "Find \"NoobClaw\" and turn on only \"Use NoobClaw\". Leave the \"NoobClaw shortcut\" off (it just adds a round button on screen).")), ui.lp(top = 10))
                 if (Build.VERSION.SDK_INT >= 33) {
                     val tip = ui.col().apply { setPadding(ui.dp(12), ui.dp(10), ui.dp(12), ui.dp(10)); background = ui.shape(ui.alpha(C.WARN, 18), 12, ui.alpha(C.WARN, 80)) }
                     tip.addView(ui.text((if (a11yTipOpen) "▾ " else "▸ ") + tr("開關是灰色的，點不動？", "Is the switch grey and won't turn on?"), 13f, C.WARN, true).apply {
