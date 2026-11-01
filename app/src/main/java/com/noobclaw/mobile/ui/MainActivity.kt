@@ -617,6 +617,30 @@ class MainActivity : AppCompatActivity() {
         if (NcAccessibilityService.isRunning && missing.isNotEmpty()) {
             add(ui.link(tr("還有 ${missing.size} 個權限沒開，去開啟 ›", "${missing.size} permission(s) still off — turn on ›"), C.WARN) { go(Screen.PERMS) }.apply { gravity = Gravity.CENTER })
         }
+        // 系統給 NoobClaw 加了「無障礙快捷按鈕」(屏幕角上多一個圓按鈕):App 關不掉它,提示用戶去關,一鍵跳到 NoobClaw 的無障礙設置
+        if (a11yShortcutOn()) {
+            val tip = ui.col().apply { setPadding(ui.dp(12), ui.dp(10), ui.dp(12), ui.dp(10)); background = ui.shape(ui.alpha(C.WARN, 14), 12, ui.alpha(C.WARN, 80)) }
+            tip.addView(ui.text(tr("屏幕角上多了一個 NoobClaw 圓按鈕？", "Extra round NoobClaw button on screen?"), 13f, C.WARN, true))
+            tip.addView(ui.sub(tr("那是系統的無障礙快捷方式，用不到。在設置裡把「NoobClaw 快捷方式」關掉即可（「使用 NoobClaw」保持開著）。",
+                "That's the system accessibility shortcut — not needed. Turn off \"NoobClaw shortcut\" (keep \"Use NoobClaw\" on).")), ui.lp(top = 2, bottom = 8))
+            tip.addView(ui.small(tr("去關閉", "Turn it off"), C.WARN, C.SURFACE, ui.alpha(C.WARN, 120)) { openA11yDetails() })
+            add(tip, top = 4)
+        }
+    }
+
+    /** Our service is a target of the system accessibility button / floating menu (the extra round button). */
+    private fun a11yShortcutOn(): Boolean = runCatching {
+        val v = Settings.Secure.getString(contentResolver, "accessibility_button_targets").orEmpty()
+        v.contains(packageName)
+    }.getOrDefault(false)
+
+    /** Opens NoobClaw's own accessibility page (Android 12+), else the accessibility list. */
+    private fun openA11yDetails() {
+        val cn = android.content.ComponentName(this, NcAccessibilityService::class.java).flattenToString()
+        val ok = Build.VERSION.SDK_INT >= 31 && runCatching {
+            startActivity(Intent("android.settings.ACCESSIBILITY_DETAILS_SETTINGS").putExtra(Intent.EXTRA_COMPONENT_NAME, cn)); true
+        }.getOrDefault(false)
+        if (!ok) runCatching { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
     }
 
     /** a11y off: no platform UI, just the permission note (same as the desktop card). */
