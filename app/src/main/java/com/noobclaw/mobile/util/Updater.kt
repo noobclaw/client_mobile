@@ -43,13 +43,16 @@ object Updater {
     }
 
     /** The newer release, or null (up to date / no release / network error). */
+    @Volatile var lastFailed = false   // the last check() hit a network / server error (not "up to date")
+
     suspend fun check(): Release? = runCatching {
+        lastFailed = false
         val r = Api.get("/api/mobile-app/latest")
         val v = r.optString("version").trim()
         val url = r.optString("url").trim()
         if (v.isEmpty() || !url.startsWith("https://", true)) null
         else if (compare(v, BuildConfig.VERSION_NAME) > 0) Release(v, url, r.optString("notes")) else null
-    }.getOrNull()
+    }.onFailure { lastFailed = true }.getOrNull()
 
     private fun dir(ctx: Context) = File(ctx.cacheDir, "updates").apply { mkdirs() }
 

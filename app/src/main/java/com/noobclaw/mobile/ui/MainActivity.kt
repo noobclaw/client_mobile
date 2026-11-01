@@ -249,7 +249,11 @@ class MainActivity : AppCompatActivity() {
         lastSig = signature()
         when {
             Prefs.token.isEmpty() -> renderLogin()
-            !inApp -> { Prefs.consentVersion = RunService.CONSENT_VERSION; render(); return }   // 「使用說明」頁不再顯示(2026-11-01),登錄後直接進
+            !inApp -> {
+                Prefs.consentVersion = RunService.CONSENT_VERSION
+                RunService.start(this); com.noobclaw.mobile.run.FloatBall.show(this)   // 原来点「同意」时做的:待命 + 悬浮球
+                render(); return
+            }   // 「使用說明」頁不再顯示(2026-11-01),登錄後直接進
             else -> when (screen) {
                 Screen.HOME -> renderHome()
                 Screen.ME -> renderMe()
@@ -897,7 +901,7 @@ class MainActivity : AppCompatActivity() {
     private fun runPanel(): View {
         val t = taskById(RunService.runningTaskId)
         val sid = t?.optString("script_id") ?: CL
-        val name = t?.let { taskName(it) } ?: scriptTitle(sid)
+        val name = if (RunService.runningTaskId == "detect") tr("檢測賬號", "Detecting account") else t?.let { taskName(it) } ?: scriptTitle(sid)
         val p = ui.panel()
         val head = ui.col().apply { background = ui.shape(ui.alpha(C.ACCENT, 18), 10, ui.alpha(C.ACCENT, 90)) }
         val mq = TextView(this).apply {
@@ -1191,6 +1195,7 @@ class MainActivity : AppCompatActivity() {
             updateCheckedAt = System.currentTimeMillis()
             val rel = Updater.check()
             if (isFinishing || isDestroyed) return@launch
+            if (rel == null && Updater.lastFailed) { toast(tr("檢查失敗，請檢查網絡後重試", "Couldn't check — check your connection and retry")); return@launch }
             if (rel == null) { toast(tr("已是最新版本 v${BuildConfig.VERSION_NAME}", "You're up to date (v${BuildConfig.VERSION_NAME})")); return@launch }
             updateRel = rel
             if (updateDialog?.isShowing != true) showUpdateDialog(rel)
@@ -1308,7 +1313,10 @@ class MainActivity : AppCompatActivity() {
 
         // 分步(和電腦端一樣):評論區點讚 = 任務 → 動作 → 評論(開了回覆才有)→ 頻率;定向獲客 = 任務 → 數量 → 頻率
         val clNow = script == CL
-        val steps = if (!clNow) listOf("task", "lvl", "freq") else if (d.optBoolean("_doReply", false)) listOf("task", "act", "cmt", "freq") else listOf("task", "act", "freq")
+        // _doReply 在下面才从旧配置初始化:这里先按同样规则算,免得编辑开了回复的任务时步骤数从 3 跳到 4
+        val replyOn = if (d.has("_doReply")) d.optBoolean("_doReply") else d.optJSONObject("config")?.let { c ->
+            (c.has("cl_like_gap_sec") || c.has("cl_ai_comment") || c.has("cl_like_nolimit")) && c.optBoolean("cl_do_reply", true) } ?: false
+        val steps = if (!clNow) listOf("task", "lvl", "freq") else if (replyOn) listOf("task", "act", "cmt", "freq") else listOf("task", "act", "freq")
         val stepNow = d.optString("_step").takeIf { it in steps } ?: "task"
         val stepIdx = steps.indexOf(stepNow)
         fun stepLabel(k: String) = when (k) { "task" -> tr("任務", "Task"); "act" -> tr("動作", "Actions"); "cmt" -> tr("評論", "Replies"); "lvl" -> tr("數量", "Amount"); else -> tr("頻率", "Schedule") }
@@ -1492,8 +1500,9 @@ class MainActivity : AppCompatActivity() {
                     val cur = if (isFrom) k.from else k.to
                     TimePickerDialog(this, android.R.style.Theme_DeviceDefault_Dialog, { _, hh, mm ->
                         val t = LocalTime.of(hh, mm)
-                        kind = if (isFrom) Schedule.Kind.Random(t, k.to) else Schedule.Kind.Random(k.from, t)
-                        d.put("schedule", Schedule.toJson(kind)); drawSched()
+                        val nf = if (isFrom) t else k.from; val nt = if (isFrom) k.to else t
+                        if (!nt.isAfter(nf)) toast(tr("結束時間要晚於開始時間（不支持跨過午夜）", "The end time must be after the start time (no overnight windows)"))
+                        else { kind = Schedule.Kind.Random(nf, nt); d.put("schedule", Schedule.toJson(kind)); drawSched() }
                     }, cur.hour, cur.minute, true).show()
                 }
                 rr.addView(ui.secondary(tr("從 ", "From ") + hm(k.from.hour, k.from.minute)) { pick(true) }, ui.weight().apply { marginEnd = ui.dp(8) })

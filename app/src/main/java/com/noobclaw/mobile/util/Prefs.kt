@@ -181,6 +181,6 @@ object Prefs {
     fun flag(name: String): Boolean = runCatching { org.json.JSONObject(flagsJson).optBoolean(name, false) }.getOrDefault(false)
 
     fun logout() {
-        sp.edit().remove(K_TOKEN).remove(K_WALLET).remove(K_TASK).remove(K_TASKS).remove(K_BINDING).remove(K_OVER).remove(K_PHONE_LIMIT).remove(K_ACCOUNT).remove(K_STATS).remove(K_RUNS).remove(K_HIDDEN).apply()
+        sp.edit().remove(K_TOKEN).remove(K_WALLET).remove(K_TASK).remove(K_TASKS).remove(K_BINDING).remove(K_OVER).remove(K_PHONE_LIMIT).remove(K_ACCOUNT).remove(K_STATS).remove(K_RUNS).remove(K_HIDDEN).remove("mobile_flags").apply()   // 功能开关跟着账号走,换账号不带过去
     }
 }

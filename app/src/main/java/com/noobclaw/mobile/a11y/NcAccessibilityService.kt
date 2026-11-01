@@ -102,9 +102,12 @@ class NcAccessibilityService : AccessibilityService() {
      * The floating ball is made untouchable meanwhile, so a tap under it reaches TikTok, not the ball.
      */
     suspend fun gesture(path: Path, durationMs: Long): Boolean {
-        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { com.noobclaw.mobile.run.FloatBall.setPassThrough(true) }
-        kotlinx.coroutines.delay(60)
-        try { return gestureRaw(path, durationMs) } finally { com.noobclaw.mobile.run.FloatBall.setPassThrough(false) }
+        // 全部放进 try:在切线程 / 等待时被取消,finally 也会把悬浮球恢复成可点
+        try {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { com.noobclaw.mobile.run.FloatBall.setPassThrough(true) }
+            kotlinx.coroutines.delay(60)
+            return gestureRaw(path, durationMs)
+        } finally { com.noobclaw.mobile.run.FloatBall.setPassThrough(false) }
     }
 
     private suspend fun gestureRaw(path: Path, durationMs: Long): Boolean = suspendCancellableCoroutine { cont ->

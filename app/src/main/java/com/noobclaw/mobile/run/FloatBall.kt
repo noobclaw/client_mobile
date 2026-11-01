@@ -55,6 +55,9 @@ object FloatBall {
     private var ringAnim: ObjectAnimator? = null
     private var pill: TextView? = null
     private var popup: FrameLayout? = null         // menu / card layer (full screen)
+    private var popupLp: WindowManager.LayoutParams? = null
+    private var progressDetect = false
+    private var liveBox: LinearLayout? = null      // progress card: the part refreshed every second (buttons stay put)
     private var popupKind = ""                     // "menu" | "progress" | "last" | "pick"
     private var cardBody: LinearLayout? = null
     private var passThrough = false
@@ -82,7 +85,7 @@ object FloatBall {
         wm = c.getSystemService(WindowManager::class.java)
         right = prefs()?.getBoolean("fb3_right", false) ?: false   // 默認左上角(右側會蓋住 TikTok 頭像 / 點讚列)
         buildBar()
-        main.post(ticker)
+        if (bar != null) { main.removeCallbacks(ticker); main.post(ticker) }   // 只在真的显示出来时跑,且不重复叠
     }
 
     fun hide() = main.post {
@@ -101,9 +104,16 @@ object FloatBall {
         val r = Runnable {
             if (passThrough == on) return@Runnable
             passThrough = on
+            val nt = WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+            // 菜单 / 卡片那层全屏遮罩也要放行,否则剧本的点击落在遮罩上被吃掉(以为点了赞其实没点)
+            val pv = popup; val plp = popupLp
+            if (pv != null && plp != null) {
+                plp.flags = if (on) plp.flags or nt else plp.flags and nt.inv()
+                runCatching { wm?.updateViewLayout(pv, plp) }
+            }
             val b = bar ?: return@Runnable
             val lp = barLp ?: return@Runnable
-            lp.flags = if (on) lp.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE else lp.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+            lp.flags = if (on) lp.flags or nt else lp.flags and nt.inv()
             runCatching { wm?.updateViewLayout(b, lp) }
         }
         if (Looper.myLooper() == Looper.getMainLooper()) r.run() else main.post(r)
@@ -122,6 +132,7 @@ object FloatBall {
 
     private fun buildBar() {
         val c = app ?: return
+        lastRunning = false   // 重新建的球:运行中的绿圈要重新亮
         // 贴边的横条:靠屏幕那一侧是直边,另一侧是半圆(看起来像个可以拉出来的把手)
         val box = FrameLayout(c).apply { elevation = dp(4).toFloat() }
         box.addView(ImageView(c).apply { setImageResource(R.mipmap.ic_launcher_round); scaleType = ImageView.ScaleType.FIT_CENTER },
@@ -245,13 +256,14 @@ object FloatBall {
                 duration = 1200; repeatMode = ValueAnimator.REVERSE; repeatCount = ValueAnimator.INFINITE; start()
             }
             b.alpha = if (run) 1f else 0.8f
-            if (!run && popupKind == "progress") openLast()   // run ended while the card was open → show its result
+            if (!run && popupKind == "progress") { if (progressDetect) closePopup() else openLast() }   // run ended while the card was open → show its result
         }
         val p = pill ?: return
         if (run && popupKind != "menu") {
             val lp = RunService.liveProgress()
             val c = lp?.optJSONObject("counts") ?: JSONObject()
-            p.text = countsLine(c, lp?.optJSONObject("targets"), taskById(RunService.runningTaskId), withCap = false, sep = "  ") + " · ${elapsed()}"
+            p.text = (if (RunService.runningTaskId == "detect") tr("檢測賬號", "Detecting account")
+                else countsLine(c, lp?.optJSONObject("targets"), taskById(RunService.runningTaskId), withCap = false, sep = "  ")) + " · ${elapsed()}"
             p.visibility = View.VISIBLE
         } else if (System.currentTimeMillis() > hintUntil || popupKind == "menu") p.visibility = View.GONE
         if (popupKind == "progress") fillProgress()
@@ -275,7 +287,7 @@ object FloatBall {
 
     private fun closePopup() {
         popup?.let { v -> runCatching { wm?.removeView(v) } }
-        popup = null; popupKind = ""; cardBody = null
+        popup = null; popupLp = null; popupKind = ""; cardBody = null; liveBox = null
         refresh()
     }
 
@@ -292,8 +304,9 @@ object FloatBall {
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT,
         ).apply { gravity = Gravity.TOP or Gravity.START }
+        if (passThrough) lp.flags = lp.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
         if (runCatching { wm?.addView(layer, lp) }.isFailure) return null
-        popup = layer; popupKind = kind
+        popup = layer; popupLp = lp; popupKind = kind
         // keep the ball above the layer
         bar?.let { b -> barLp?.let { l -> runCatching { wm?.removeView(b); wm?.addView(b, l) } } }
         return layer
@@ -424,33 +437,49 @@ object FloatBall {
     private fun taskTitle(t: JSONObject?): String {
         if (t == null) return "TikTok"
         val p = platformName(Prefs.platformOf(t))
-        val name = t.optString("name").ifEmpty { if (t.optString("script_id") == "tiktok_lead_engage") tr("定向獲客任務", "Lead task") else tr("評論區點讚任務", "Comment-like task") }
+        val n = t.optString("name").trim()
+        val name = when {
+            n.isEmpty() || n == "評論區點讚任務" || n == "定向獲客任務" ->
+                if (t.optString("script_id") == "tiktok_lead_engage") tr("定向獲客任務", "Lead task") else tr("評論區點讚任務", "Comment-like task")
+            n.startsWith("評論區點讚 · ") -> tr("評論區點讚", "Comment likes") + " · " + n.removePrefix("評論區點讚 · ")
+            n.startsWith("定向獲客 · ") -> tr("定向獲客", "Lead engage") + " · " + n.removePrefix("定向獲客 · ")
+            else -> n
+        }
         return "$p · $name"
     }
     private fun platformName(id: String) = when (id) { "douyin" -> tr("抖音", "Douyin"); "xhs" -> tr("小紅書", "RedNote"); else -> "TikTok" }
     private fun taskById(id: String?) = Prefs.tasks().firstOrNull { it.optString("id") == id }
 
+    private fun runTitle(): String =
+        if (RunService.runningTaskId == "detect") "TikTok · " + tr("檢測賬號", "Detecting account") else taskTitle(taskById(RunService.runningTaskId))
+
     private fun openProgress() {
         if (!running()) { openLast(); return }
-        card("progress") ?: return
+        val col = card("progress") ?: return
+        val c = app ?: return
+        progressDetect = RunService.runningTaskId == "detect"   // 检测账号不记运行记录,结束时别弹「上次结果」
+        val box = LinearLayout(c).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(box)
+        liveBox = box
         fillProgress()
+        // 按钮只建一次:每秒刷新只重建上面的数字,不然按到一半被重建,点击会丢
+        buttons(col,
+            Triple("■ " + tr("停止", "Stop"), Color.parseColor("#E5484D")) { closePopup(); app?.let { RunService.start(it, RunService.ACTION_STOP_RUN) }; toast(tr("正在停止…", "Stopping…")) },
+            Triple(tr("收起", "Close"), Color.parseColor("#262C40")) { closePopup() },
+        )
     }
 
     private fun fillProgress() {
-        val col = cardBody ?: return
+        val col = liveBox ?: return
         if (!running()) return
         col.removeAllViews()
         val p = RunService.liveProgress() ?: JSONObject()
         val c = p.optJSONObject("counts") ?: JSONObject()
         val t = p.optJSONObject("targets") ?: JSONObject()
-        header(col, taskTitle(taskById(RunService.runningTaskId)), "● " + tr("運行中 ", "Running ") + elapsed(), Color.parseColor("#00FF88"))
+        header(col, runTitle(), "● " + tr("運行中 ", "Running ") + elapsed(), Color.parseColor("#00FF88"))
         kv(col, tr("進度", "Progress"), countsLine(c, t, taskById(RunService.runningTaskId), withCap = true))
         kv(col, tr("消耗", "Cost"), "💎 " + String.format(java.util.Locale.US, "%,d", p.optLong("credits")))
         steps(col, RunService.runningRunId, 3)
-        buttons(col,
-            Triple("■ " + tr("停止", "Stop"), Color.parseColor("#E5484D")) { closePopup(); app?.let { RunService.start(it, RunService.ACTION_STOP_RUN) }; toast(tr("正在停止…", "Stopping…")) },
-            Triple(tr("收起", "Close"), Color.parseColor("#262C40")) { closePopup() },
-        )
     }
 
     private fun openLast() {

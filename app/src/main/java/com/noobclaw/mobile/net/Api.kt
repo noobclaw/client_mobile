@@ -73,11 +73,19 @@ object Api {
     suspend fun saveTask(task: JSONObject) = put("/api/mobile/tasks/current", task.put("device_id", Prefs.deviceId))
     /** The phone's task list (app ≥ 0.2). */
     suspend fun fetchTasks() = get("/api/mobile/tasks?device_id=${Prefs.deviceId}")
-        .also { Prefs.mergeLastStarted(it.optJSONObject("last_started")) } // server ≥ 2026-10-31: per-task last start (survives reinstalls)
+        .also {
+            Prefs.mergeLastStarted(it.optJSONObject("last_started")) // server ≥ 2026-10-31: per-task last start (survives reinstalls)
+            // server ≥ 2026-11-01: this phone's registered TikTok account → a reinstalled app shows it without re-detecting
+            val b = it.optJSONObject("binding")
+            if (b != null && Prefs.bindingJson.isBlank() && Regex("^[a-z0-9._]{2,24}$").matches(b.optString("platform_uid")))
+                Prefs.bindingJson = JSONObject().put("platform", "tiktok").put("platform_uid", b.optString("platform_uid"))
+                    .put("display_id", b.optString("display_id")).put("nickname", b.optString("nickname")).toString()
+        }
     suspend fun saveTasks(tasks: org.json.JSONArray) =
         put("/api/mobile/tasks", JSONObject().put("tasks", tasks).put("device_id", Prefs.deviceId))
-    suspend fun fetchScript(id: String, appVer: Long, capVer: Int) =
+    suspend fun fetchScript(id: String, appVer: Long, capVer: Int, purpose: String = "") =
         get("/api/mobile/scenarios/$id?appVer=$appVer&capVer=$capVer&device_id=${Prefs.deviceId}" +
+            (if (purpose.isNotEmpty()) "&purpose=$purpose" else "") +   // detect = 检测账号,不占同时运行名额
             // Only debug builds without a pinned key can run unsigned test overrides.
             (if (BuildConfig.DEBUG && BuildConfig.SCRIPT_PUBKEY_HEX.isEmpty()) "&unsigned_ok=1" else ""))
     suspend fun uploadLogs(linesJson: String) =

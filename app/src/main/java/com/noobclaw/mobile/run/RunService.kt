@@ -44,6 +44,7 @@ class RunService : Service() {
     @Volatile private var notifJob: Job? = null
     @Volatile private var lastTasksAt = 0L          // 服務器任務列表的最後修改時間(心跳帶回)
     private val lastTry = HashMap<String, Long>() // every-N tasks: last time the scheduler tried to start them
+    private val slotRejectedAt = HashMap<String, Long>() // task id → when the server refused it for concurrency_limit
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -193,6 +194,7 @@ class RunService : Service() {
         // Only the one task per platform the UI shows (left-over duplicates from older versions never run).
         for (task in Prefs.primaryTasks()) {
             val id = task.optString("id")
+            if (System.currentTimeMillis() - (slotRejectedAt[id] ?: 0L) < SLOT_RETRY_MS) continue   // 刚因同时运行满额被拒:过几分钟再试
             val due = Schedule.due(task, ZonedDateTime.now(), doneSlots(), "#$id", Prefs.lastStart(id)) ?: continue
             val key = due.slotKey
             if (Schedule.kind(task).let { it is Schedule.Kind.Daily || it is Schedule.Kind.Random }) markSlotDone(key) // mark first: a crash mid-run never re-runs the same slot
@@ -223,6 +225,7 @@ class RunService : Service() {
         val runId = UUID.randomUUID().toString()
         val started = System.currentTimeMillis()
         val report = JSONObject().put("run_id", runId).put("slot", slotKey).put("dry_run", dryRun)
+        var prevLastStart = -1L
         try {
             val pre = preconditions()
             if (pre != null) { report.put("status", "skipped").put("reason", pre); RunLog.w(tr("跳過運行：", "Skipped: ") + pre, runId); return }
@@ -236,9 +239,9 @@ class RunService : Service() {
             val binding = runCatching { JSONObject(Prefs.bindingJson) }.getOrElse { JSONObject() } // filled by the script (setAccount)
             report.put("late_sec", Schedule.lateSeconds(task, slotKey, ZonedDateTime.now()))
             val (pkg, ver) = targetAppInfo() ?: run { report.put("status", "skipped").put("reason", "app_not_installed"); return }
-            if (!dryRun && synthetic == null) Prefs.setLastStart(task.optString("id"), started) // the run really starts: "every N hours" counts from here
+            if (!dryRun && synthetic == null) { prevLastStart = Prefs.lastStart(task.optString("id")) ?: 0L; Prefs.setLastStart(task.optString("id"), started) } // the run really starts: "every N hours" counts from here
             RunLog.i(tr("開始運行", "Run started") + "（" + (if (dryRun) tr("試跑", "dry run") else tr("正式", "live")) + "）· $pkg v$ver", runId)
-            val pack = ScriptLoader.load(task.optString("script_id", "tiktok_comment_like"), ver)
+            val pack = ScriptLoader.load(task.optString("script_id", "tiktok_comment_like"), ver, if (synthetic != null) "detect" else "")
             report.put("script_version", pack.version)
             startInForeground(tr("運行中", "Running") + " · ${pack.id}")
             // 通知欄每 5 秒更新一次進度(懸浮球之外的另一個入口)
@@ -265,6 +268,13 @@ class RunService : Service() {
                 // 會員可同時運行的手機數已滿:這次不開始,告訴用戶(登錄不限台數,限的是同時跑的台數)
                 val msg = tr("同時運行的手機已達會員上限，等其他手機跑完再試，或升級會員", "Your plan's limit of phones running at once is reached — try later or upgrade")
                 RunLog.w(msg, runId)
+                // 满额是暂时的:别把这次排程用掉(每天 / 随机的时段取消「已跑」,每 N 小时的恢复上次开始时间),几分钟后再试
+                if (!dryRun && synthetic == null && taskId != null) {
+                    slotRejectedAt[taskId] = System.currentTimeMillis()
+                    unmarkSlot(slotKey)
+                    if (prevLastStart >= 0) Prefs.setLastStart(taskId, prevLastStart)
+                    lastTry.remove(taskId)
+                }
                 android.os.Handler(android.os.Looper.getMainLooper()).post { android.widget.Toast.makeText(applicationContext, msg, android.widget.Toast.LENGTH_LONG).show() }
             } else RunLog.e(tr("劇本被拒絕：", "Script refused: ") + e.reason, runId)
         } catch (e: kotlinx.coroutines.CancellationException) {
@@ -283,22 +293,25 @@ class RunService : Service() {
             }
             report.optString("task_id").takeIf { it.isNotEmpty() }?.let { res.put("task_id", it) } // the server groups runs by result.task_id
             if (res.length() > 0) report.put("result", res)
+            report.put("duration_ms", System.currentTimeMillis() - started)
+            // 先写本地运行记录,再清「运行中」:悬浮球看到运行结束会马上打开「上次结果」,这时必须已经是这一次
+            // (满额被拒不算一次运行,不记)
+            if (synthetic == null && report.optString("task_id").isNotEmpty() && report.optString("status") != "skipped"
+                && report.optString("reason") != "concurrency_limit") runCatching {
+                Prefs.recordRun(JSONObject().put("run_id", runId).put("task_id", report.optString("task_id"))
+                    .put("status", report.optString("status")).put("reason", report.optString("reason"))
+                    .put("dry_run", dryRun).put("counts", res.optJSONObject("counts") ?: JSONObject())
+                    .put("credits", res.optLong("credits")).put("started_at", started)
+                    .put("duration_ms", report.optLong("duration_ms")))
+            }
             engine = null
             liveEngine = null
             runningTaskId = null
             runningRunId = null
             notifJob?.cancel(); notifJob = null
-            report.put("duration_ms", System.currentTimeMillis() - started)
             // NonCancellable: the report still goes out when the run was cancelled or the service is stopping.
             kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
                 if (synthetic == null) runCatching { Api.reportRun(report) }   // 檢測帳號不算一次運行
-                if (synthetic == null && report.optString("task_id").isNotEmpty() && report.optString("status") != "skipped") runCatching {
-                    Prefs.recordRun(JSONObject().put("run_id", runId).put("task_id", report.optString("task_id"))
-                        .put("status", report.optString("status")).put("reason", report.optString("reason"))
-                        .put("dry_run", dryRun).put("counts", res.optJSONObject("counts") ?: JSONObject())
-                        .put("credits", res.optLong("credits")).put("started_at", started)
-                        .put("duration_ms", report.optLong("duration_ms")))
-                }
                 runCatching { uploadLogs() } // also when automation is off (manual / dry runs)
             }
             if (autostart()) startInForeground(getString(R.string.app_name) + " · " + tr("待命中", "Standing by"))
@@ -376,6 +389,12 @@ class RunService : Service() {
     private fun doneSlots(): Set<String> =
         getSharedPreferences("nc_slots", Context.MODE_PRIVATE).getStringSet("done", emptySet()) ?: emptySet()
 
+    private fun unmarkSlot(key: String) {
+        val sp = getSharedPreferences("nc_slots", Context.MODE_PRIVATE)
+        val keep = (sp.getStringSet("done", emptySet()) ?: emptySet()).toMutableSet()
+        if (keep.remove(key)) sp.edit().putStringSet("done", keep).apply()
+    }
+
     private fun markSlotDone(key: String) {
         val sp = getSharedPreferences("nc_slots", Context.MODE_PRIVATE)
         // Keep only the last few days of slot keys ("yyyy-MM-dd@HH:mm" sorts by date).
@@ -392,6 +411,7 @@ class RunService : Service() {
         const val TASK_REFRESH_TICKS = 4
         const val COMPLIANCE_TICKS = 120          // 120 × 15 s = 30 min
         const val RETRY_MS = 15 * 60_000L         // skipped "every N h" run: try again after 15 min
+        const val SLOT_RETRY_MS = 5 * 60_000L     // refused because the plan's phones-at-once limit is full: retry after 5 min
         const val ACTION_RUN_NOW = "com.noobclaw.mobile.RUN_NOW"
         const val ACTION_DRY_RUN = "com.noobclaw.mobile.DRY_RUN"
         const val ACTION_DETECT_ACCOUNT = "com.noobclaw.mobile.DETECT_ACCOUNT"

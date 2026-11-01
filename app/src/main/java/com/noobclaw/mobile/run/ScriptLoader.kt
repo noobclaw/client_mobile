@@ -11,8 +11,8 @@ object ScriptLoader {
 
     class Rejected(val reason: String) : Exception(reason)
 
-    suspend fun load(scriptId: String, targetAppVersionCode: Long): ScriptPack {
-        val r = Api.fetchScript(scriptId, targetAppVersionCode, BuildConfig.CAP_VER)
+    suspend fun load(scriptId: String, targetAppVersionCode: Long, purpose: String = ""): ScriptPack {
+        val r = Api.fetchScript(scriptId, targetAppVersionCode, BuildConfig.CAP_VER, purpose)
         if (!r.optBoolean("ok", false)) throw Rejected(r.optString("reason", "script_unavailable"))
         val version = r.optString("version")
         val code = r.optString("code")
