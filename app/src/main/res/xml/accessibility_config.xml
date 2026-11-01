@@ -5,7 +5,7 @@
   these packages (see A11yGuard). Do not add packages here without a product + legal review.
 -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
-    android:packageNames="com.zhiliaoapp.musically,com.ss.android.ugc.trill,com.ss.android.ugc.aweme,com.ss.android.ugc.aweme.lite,com.xingin.xhs"
+    android:packageNames="com.zhiliaoapp.musically,com.ss.android.ugc.trill"
     android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged|typeViewScrolled"
     android:accessibilityFeedbackType="feedbackGeneric"
     android:accessibilityFlags="flagReportViewIds|flagRetrieveInteractiveWindows|flagIncludeNotImportantViews"
