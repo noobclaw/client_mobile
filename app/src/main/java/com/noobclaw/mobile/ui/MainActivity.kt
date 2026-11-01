@@ -563,7 +563,7 @@ class MainActivity : AppCompatActivity() {
         return when {
             running -> ui.pillSolid(tr("運行中", "Running"), C.ACCENT, C.ON_ACCENT)
             Prefs.overLimit -> ui.pill(tr("超出會員數", "Over limit"), C.WARN)
-            !NcAccessibilityService.isRunning -> ui.pill(tr("缺權限", "Permissions"), C.WARN)
+            missingPerms().isNotEmpty() -> ui.pill(tr("缺權限", "Permissions"), C.WARN)
             System.currentTimeMillis() < Prefs.cooldownUntil -> ui.pill(tr("冷卻中", "Cooling down"), C.DANGER)
             else -> ui.pill(tr("在線", "Online"), C.ACCENT)
         }
@@ -607,16 +607,12 @@ class MainActivity : AppCompatActivity() {
 
         when {
             running -> card.addView(runPanel())
-            !NcAccessibilityService.isRunning -> card.addView(permPanel())
+            missingPerms().isNotEmpty() -> card.addView(permPanel())
             else -> card.addView(platformPanel())
         }
         add(card, bottom = 12)
 
-        // a11y is on but something else is missing: a small reminder under the card
-        val missing = missingPerms()
-        if (NcAccessibilityService.isRunning && missing.isNotEmpty()) {
-            add(ui.link(tr("還有 ${missing.size} 個權限沒開，去開啟 ›", "${missing.size} permission(s) still off — turn on ›"), C.WARN) { go(Screen.PERMS) }.apply { gravity = Gravity.CENTER })
-        }
+        // 缺權限時卡片裡就是權限提示(三個都要開),下面不再重複提醒
         // 系統給 NoobClaw 加了「無障礙快捷按鈕」(屏幕角上多一個圓按鈕):App 關不掉它,提示用戶去關,一鍵跳到 NoobClaw 的無障礙設置
         if (a11yShortcutOn()) {
             val tip = ui.col().apply { setPadding(ui.dp(12), ui.dp(10), ui.dp(12), ui.dp(10)); background = ui.shape(ui.alpha(C.WARN, 14), 12, ui.alpha(C.WARN, 80)) }
@@ -647,7 +643,9 @@ class MainActivity : AppCompatActivity() {
     private fun permPanel(): View {
         val p = ui.panel(ui.alpha(C.WARN, 90), ui.alpha(C.WARN, 14)).apply { setPadding(ui.dp(16), ui.dp(18), ui.dp(16), ui.dp(16)); gravity = Gravity.CENTER_HORIZONTAL }
         p.addView(ui.text(tr("運行需要權限", "Permissions needed to run"), 16f, C.WARN, true).apply { gravity = Gravity.CENTER }, ui.lp(bottom = 6))
-        p.addView(ui.text(tr("請為 NoobClaw App 打開無障礙服務權限", "Turn on the accessibility service for the NoobClaw app"), 13f, C.WARN).apply { gravity = Gravity.CENTER }, ui.lp(bottom = 14))
+        // 三個權限(無障礙 / 懸浮窗 / 後台運行)都開了才能建任務、運行
+        val names = missingPerms().map { when (it) { PermKind.A11Y -> tr("無障礙服務", "Accessibility"); PermKind.OVERLAY -> tr("懸浮窗", "Display over apps"); PermKind.BATTERY -> tr("後台運行", "Background") } }
+        p.addView(ui.text(tr("還沒開：", "Still off: ") + names.joinToString(tr("、", ", ")) + tr("。三個權限都開啟後才能創建任務。", ". Turn on all three to create tasks."), 13f, C.WARN).apply { gravity = Gravity.CENTER }, ui.lp(bottom = 14))
         p.addView(ui.small(tr("去開啟", "Turn on"), C.ON_ACCENT, C.ACCENT, null) { go(Screen.PERMS) }.apply { setPadding(ui.dp(22), ui.dp(10), ui.dp(22), ui.dp(10)) },
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         return p
@@ -1264,6 +1262,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun newTask() {
         if (taskFor(currentTab()) != null) { toast(tr("每個平台只能建 1 個任務", "One task per platform")); return }
+        if (missingPerms().isNotEmpty()) { toast(tr("請先開啟全部 3 個權限", "Turn on all three permissions first")); go(Screen.PERMS); return }
         if (accountRow() == null) { toast(tr("請先檢測 TikTok 帳號", "Detect the TikTok account first")); return }
         draft = JSONObject().put("script_id", CL).put("schedule", Schedule.toJson(Schedule.Kind.Daily(LocalTime.of(9, 30)))) // 新建默認每天定時
         configBack = Screen.HOME
