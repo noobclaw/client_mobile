@@ -442,6 +442,10 @@ object FloatBall {
         val parts = mutableListOf<String>()
         if (on("like", "cl_do_like")) parts += "👍 ${c.optLong("like")}${cap("like")}"
         if (on("comment", "cl_do_reply")) parts += "💬 ${c.optLong("comment")}${cap("comment")}"
+        // 收藏 / 關注 / 新潛客:有數字才顯示(互動漲粉、定向獲客)
+        if (c.optLong("favorite") > 0) parts += "⭐ ${c.optLong("favorite")}"
+        if (c.optLong("follow") > 0) parts += "➕ ${c.optLong("follow")}"
+        if (c.optLong("lead_new") > 0) parts += "👤 ${c.optLong("lead_new")}"
         return parts.joinToString(sep).ifEmpty { "👍 0" }
     }
 
@@ -450,8 +454,8 @@ object FloatBall {
         val p = platformName(Prefs.platformOf(t))
         val n = t.optString("name").trim()
         val name = when {
-            n.isEmpty() || n == "評論區點讚任務" || n == "定向獲客任務" ->
-                if (t.optString("script_id") == "tiktok_lead_engage") tr("定向獲客任務", "Lead task") else tr("評論區點讚任務", "Comment-like task")
+            n.isEmpty() || n == "評論區點讚任務" || n == "定向獲客任務" || n == "互動漲粉任務" -> t.optString("script_id").let { sid ->
+                if (sid.endsWith("_lead_engage")) tr("定向獲客任務", "Lead task") else if (sid.endsWith("_auto_engage")) tr("互動漲粉任務", "Engagement task") else tr("評論區點讚任務", "Comment-like task") }
             n.startsWith("評論區點讚 · ") -> tr("評論區點讚", "Comment likes") + " · " + n.removePrefix("評論區點讚 · ")
             n.startsWith("定向獲客 · ") -> tr("定向獲客", "Lead engage") + " · " + n.removePrefix("定向獲客 · ")
             else -> n
@@ -462,7 +466,7 @@ object FloatBall {
     private fun taskById(id: String?) = Prefs.tasks().firstOrNull { it.optString("id") == id }
 
     private fun runTitle(): String =
-        if (RunService.runningTaskId == "detect") "TikTok · " + tr("檢測賬號", "Detecting account") else taskTitle(taskById(RunService.runningTaskId))
+        if (RunService.runningTaskId == "detect") tr("檢測賬號", "Detecting account") else taskTitle(taskById(RunService.runningTaskId))
 
     private fun openProgress() {
         if (!running()) { openLast(); return }

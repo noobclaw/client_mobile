@@ -41,7 +41,7 @@ data class ScriptPack(
  * to the script manifest's risk_caps); the ceilings below are the app's own last line of defence.
  * Charge action types map onto three buckets: likes, comments, follows.
  */
-data class RunCaps(val maxLikes: Int, val maxComments: Int, val maxFollows: Int, val maxRunMs: Long) {
+data class RunCaps(val maxLikes: Int, val maxComments: Int, val maxFollows: Int, val maxRunMs: Long, val maxFavorites: Int = 0) {
     companion object {
         const val CEIL_LIKES = 1000
         const val CEIL_COMMENTS = 300
@@ -55,13 +55,16 @@ data class RunCaps(val maxLikes: Int, val maxComments: Int, val maxFollows: Int,
             maxComments = if (nolimit(task, "cl_reply_nolimit")) Int.MAX_VALUE / 2 else task.optInt("max_comments", 30).coerceIn(0, CEIL_COMMENTS),
             maxFollows = task.optInt("max_follows", 0).coerceIn(0, CEIL_FOLLOWS),
             maxRunMs = (task.optLong("max_run_minutes", 60) * 60_000).coerceIn(60_000, HARD_RUN_MS),
+            // 收藏(抖音 / 小紅書互動任務,2026-11-02):config.max_favorites
+            maxFavorites = (task.optJSONObject("config")?.optInt("max_favorites", 0) ?: 0).coerceIn(0, CEIL_FOLLOWS),
         )
 
         /** Which cap bucket a charge action type counts against; null = not allowed on mobile. */
         fun bucketOf(action: String): String? = when (action) {
-            "tt_comment_like", "like_lite" -> "likes"
+            "tt_comment_like", "like_lite", "like", "comment_like" -> "likes"
             "comment" -> "comments"
             "follow" -> "follows"
+            "favorite" -> "favorites"
             else -> null
         }
     }
@@ -88,6 +91,8 @@ class ScriptEngine(
     private val ui = UiOps { NcAccessibilityService.instance }
     private val governor = Governor(maxInputsPerMinute = 30)
     private val caps = RunCaps.fromTask(task)
+    /** tiktok / douyin / xhs: decides the app, allowed links, bound account and the billing platform. */
+    private val platform = task.optString("platform").ifEmpty { "tiktok" }
     private val used = HashMap<String, Int>()
     private val dryState = HashMap<String, Any?>()
     private val counts = JSONObject()
@@ -103,7 +108,7 @@ class ScriptEngine(
     /** Step args are shown to the user and uploaded: never other people's handles or links. */
     private fun cleanStepText(v: String): String = v
         .replace(Regex("https?://\\S+", RegexOption.IGNORE_CASE), "")
-        .replace(Regex("\\S*tiktok\\.com/\\S*", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("\\S*(tiktok|douyin|xiaohongshu|xhslink)\\.com/\\S*", RegexOption.IGNORE_CASE), "")
         .replace(Regex("@[A-Za-z0-9._]+"), "")
         .replace(Regex("\\s{2,}"), " ").trim().take(120)
 
@@ -266,10 +271,14 @@ const ctx = Object.freeze({
                     ok(ui.imeEnter(a.optInt("handle")))
                 }
                 "openUrl" -> {
-                    // Only TikTok web links, and only into the installed TikTok app (never a browser).
+                    // Only the platform's own links, and only into its installed app (never a browser).
                     val url = a.optString("url")
-                    if (!Regex("^https://(www\\.|m\\.|vm\\.|vt\\.)?tiktok\\.com/[^\\s]*$", RegexOption.IGNORE_CASE).matches(url))
-                        return err("url_not_allowed", "guard_blocked")
+                    val allowed = when (platform) {
+                        "douyin" -> Regex("^(https://((www|v|m)\\.)?(douyin|iesdouyin)\\.com/[^\\s]*|snssdk1128://[^\\s]+)$", RegexOption.IGNORE_CASE)
+                        "xhs" -> Regex("^(https://((www)\\.)?xiaohongshu\\.com/[^\\s]*|https://xhslink\\.com/[^\\s]*|xhsdiscover://[^\\s]+)$", RegexOption.IGNORE_CASE)
+                        else -> Regex("^https://(www\\.|m\\.|vm\\.|vt\\.)?tiktok\\.com/[^\\s]*$", RegexOption.IGNORE_CASE)
+                    }
+                    if (!allowed.matches(url)) return err("url_not_allowed", "guard_blocked")
                     val pkg = task.optString("target_package")
                     if (!A11yGuard.isTarget(pkg)) return err("not_allowed", "guard_blocked")
                     governor.acquire()
@@ -278,35 +287,35 @@ const ctx = Object.freeze({
                 }
                 "quota" -> {
                     val b = a.optString("bucket")
-                    val limit = when (b) { "likes" -> caps.maxLikes; "comments" -> caps.maxComments; "follows" -> caps.maxFollows; else -> 0 }
+                    val limit = when (b) { "likes" -> caps.maxLikes; "comments" -> caps.maxComments; "follows" -> caps.maxFollows; "favorites" -> caps.maxFavorites; else -> 0 }
                     ok((limit - (used[b] ?: 0)).coerceAtLeast(0))
                 }
                 "stateGet" -> {
                     val uid = binding.optString("platform_uid")
                     if (dryRun && dryState.containsKey(a.optString("key"))) return ok(dryState[a.optString("key")])
-                    ok(if (uid.isEmpty()) null else Api.stateGet(uid, pack.id, a.optString("key")))
+                    ok(if (uid.isEmpty()) null else Api.stateGet(uid, pack.id, a.optString("key"), platform))
                 }
                 "stateSet" -> {
                     val uid = binding.optString("platform_uid")
                     // Dry runs keep state in memory only, so a dry run never changes real counters or lists.
                     if (dryRun) { dryState[a.optString("key")] = a.opt("value"); return ok(true) }
-                    if (uid.isNotEmpty()) Api.stateSet(uid, pack.id, a.optString("key"), a.opt("value"))
+                    if (uid.isNotEmpty()) Api.stateSet(uid, pack.id, a.optString("key"), a.opt("value"), platform)
                     ok(true)
                 }
                 "leadsAdd" -> {
                     val uid = binding.optString("platform_uid")
                     val handles = a.optJSONArray("handles") ?: org.json.JSONArray()
                     if (dryRun || uid.isEmpty()) return ok(JSONObject().put("added", handles.length()).put("dry", dryRun))
-                    ok(Api.leadsAdd(uid, handles, a.optString("source"), a.optInt("maxLeads", 300)))
+                    ok(Api.leadsAdd(uid, handles, a.optString("source"), a.optInt("maxLeads", 300), platform))
                 }
                 "leadsNext" -> {
                     val uid = binding.optString("platform_uid")
                     if (uid.isEmpty()) return ok(JSONObject().put("leads", org.json.JSONArray()).put("pending", 0))
-                    ok(Api.leadsNext(uid, a.optInt("limit", 20).coerceIn(1, 100)))
+                    ok(Api.leadsNext(uid, a.optInt("limit", 20).coerceIn(1, 100), platform))
                 }
                 "leadsMark" -> {
                     val uid = binding.optString("platform_uid")
-                    if (!dryRun && uid.isNotEmpty()) Api.leadsMark(uid, a.optString("handle"), a.optString("status"), a.optString("action"), a.optString("note"))
+                    if (!dryRun && uid.isNotEmpty()) Api.leadsMark(uid, a.optString("handle"), a.optString("status"), a.optString("action"), a.optString("note"), platform)
                     ok(true)
                 }
                 "openApp" -> {
@@ -362,11 +371,11 @@ const ctx = Object.freeze({
                 "chargeAction" -> ok(charge(a.optString("action"), a.optString("ref")))
                 "historyHas" -> {
                     val uid = binding.optString("platform_uid")
-                    ok(uid.isNotEmpty() && Api.historyHas(uid, a.optString("kind"), a.optString("key")))
+                    ok(uid.isNotEmpty() && Api.historyHas(uid, a.optString("kind"), a.optString("key"), platform))
                 }
                 "historyRemember" -> {
                     val uid = binding.optString("platform_uid")
-                    if (!dryRun && uid.isNotEmpty()) Api.historyRemember(uid, a.optString("kind"), a.optString("key"))
+                    if (!dryRun && uid.isNotEmpty()) Api.historyRemember(uid, a.optString("kind"), a.optString("key"), platform)
                     ok(true)
                 }
                 "count" -> {
@@ -381,13 +390,16 @@ const ctx = Object.freeze({
                 }
                 "dumpTree" -> ok(ui.dumpTree())
                 "setAccount" -> {
-                    val h = a.optString("handle").trim().removePrefix("@").lowercase()
-                    if (!Regex("^[a-z0-9._]{2,24}$").matches(h)) return err("bad_handle", "bad_handle")
-                    val stored = runCatching { JSONObject(com.noobclaw.mobile.util.Prefs.bindingJson) }.getOrElse { JSONObject() }
+                    // TikTok: @handle (lower case); 抖音號 / 小紅書號: as shown (2026-11-02)
+                    val raw = a.optString("handle").trim().removePrefix("@")
+                    val h = if (platform == "tiktok") raw.lowercase() else raw
+                    val okId = if (platform == "tiktok") Regex("^[a-z0-9._]{2,24}$") else Regex("^[A-Za-z0-9._-]{2,40}$")
+                    if (!okId.matches(h)) return err("bad_handle", "bad_handle")
+                    val stored = runCatching { JSONObject(com.noobclaw.mobile.util.Prefs.bindingFor(platform)) }.getOrElse { JSONObject() }
                     // No nickname read this time: keep the one we already know for the same account.
                     val nick = a.optString("nickname").trim().take(60)
                         .ifEmpty { if (stored.optString("platform_uid") == h) stored.optString("nickname") else "" }
-                    val b = JSONObject().put("platform", "tiktok").put("platform_uid", h).put("display_id", "@$h").put("nickname", nick)
+                    val b = JSONObject().put("platform", platform).put("platform_uid", h).put("display_id", if (platform == "tiktok") "@$h" else h).put("nickname", nick)
                     // Send again when the account changed, or when we now know a (different) nickname.
                     val changed = binding.optString("platform_uid") != h || stored.optString("platform_uid") != h ||
                         (nick.isNotEmpty() && stored.optString("nickname") != nick)
@@ -397,7 +409,7 @@ const ctx = Object.freeze({
                             if (e.status == 409) return err("platform_account_taken", "platform_account_taken")
                             throw e
                         }
-                        com.noobclaw.mobile.util.Prefs.bindingJson = b.toString()
+                        com.noobclaw.mobile.util.Prefs.setBindingFor(platform, b.toString())
                     }
                     binding = b
                     ok(true)
@@ -417,7 +429,7 @@ const ctx = Object.freeze({
     /** Applies the per-run caps before charging; charging carries an idempotency key (no double charge on retry). */
     private suspend fun charge(action: String, ref: String): JSONObject {
         val bucket = RunCaps.bucketOf(action) ?: return JSONObject().put("ok", false).put("reason", "action_not_enabled")
-        val limit = when (bucket) { "likes" -> caps.maxLikes; "comments" -> caps.maxComments; else -> caps.maxFollows }
+        val limit = when (bucket) { "likes" -> caps.maxLikes; "comments" -> caps.maxComments; "favorites" -> caps.maxFavorites; else -> caps.maxFollows }
         val used = used[bucket] ?: 0
         if (used >= limit) return JSONObject().put("ok", false).put("reason", "cap_reached")
         if (dryRun) {
@@ -432,7 +444,7 @@ const ctx = Object.freeze({
         var last: Exception? = null
         for (attempt in 1..3) {
             try {
-                val r = Api.chargeAction(action, "tiktok", ref, key, pack.version)
+                val r = Api.chargeAction(action, platform, ref, key, pack.version)
                 val charged = r.optInt("charged", 0)
                 synchronized(statLock) { credits += charged.coerceAtLeast(0) }
                 return JSONObject().put("ok", r.optBoolean("ok", true)).put("charged", charged)

@@ -76,10 +76,13 @@ object Api {
         .also {
             Prefs.mergeLastStarted(it.optJSONObject("last_started")) // server ≥ 2026-10-31: per-task last start (survives reinstalls)
             // server ≥ 2026-11-01: this phone's registered TikTok account → a reinstalled app shows it without re-detecting
-            val b = it.optJSONObject("binding")
-            if (b != null && Prefs.bindingJson.isBlank() && Regex("^[a-z0-9._]{2,24}$").matches(b.optString("platform_uid")))
-                Prefs.bindingJson = JSONObject().put("platform", "tiktok").put("platform_uid", b.optString("platform_uid"))
-                    .put("display_id", b.optString("display_id")).put("nickname", b.optString("nickname")).toString()
+            val all = it.optJSONObject("bindings") ?: JSONObject().apply { it.optJSONObject("binding")?.let { b -> put("tiktok", b) } }
+            for (p in listOf("tiktok", "douyin", "xhs")) {
+                val b = all.optJSONObject(p) ?: continue
+                if (Prefs.bindingFor(p).isNotBlank() || !Regex("^[A-Za-z0-9._-]{2,40}$").matches(b.optString("platform_uid"))) continue
+                Prefs.setBindingFor(p, JSONObject().put("platform", p).put("platform_uid", b.optString("platform_uid"))
+                    .put("display_id", b.optString("display_id")).put("nickname", b.optString("nickname")).toString())
+            }
         }
     suspend fun saveTasks(tasks: org.json.JSONArray) =
         put("/api/mobile/tasks", JSONObject().put("tasks", tasks).put("device_id", Prefs.deviceId))
@@ -96,23 +99,23 @@ object Api {
     /** Uploads a diagnostics bundle (recent logs, device health, optional redacted tree); returns a support code. */
     suspend fun sendDiagnostics(bundle: JSONObject): String =
         post("/api/mobile/diagnostics", bundle.put("device_id", Prefs.deviceId)).optString("support_code")
-    suspend fun historyHas(platformUid: String, kind: String, key: String): Boolean =
-        get("/api/mobile/history?platform=tiktok&platform_uid=${enc(platformUid)}&kind=${enc(kind)}&key=${enc(key)}").optBoolean("has", false)
-    suspend fun historyRemember(platformUid: String, kind: String, key: String) =
-        post("/api/mobile/history", JSONObject().put("platform", "tiktok").put("platform_uid", platformUid).put("kind", kind).put("key", key))
+    suspend fun historyHas(platformUid: String, kind: String, key: String, platform: String = "tiktok"): Boolean =
+        get("/api/mobile/history?platform=$platform&platform_uid=${enc(platformUid)}&kind=${enc(kind)}&key=${enc(key)}").optBoolean("has", false)
+    suspend fun historyRemember(platformUid: String, kind: String, key: String, platform: String = "tiktok") =
+        post("/api/mobile/history", JSONObject().put("platform", platform).put("platform_uid", platformUid).put("kind", kind).put("key", key))
 
-    suspend fun stateGet(platformUid: String, scriptId: String, key: String): Any? =
-        get("/api/mobile/state?platform=tiktok&platform_uid=${enc(platformUid)}&script_id=${enc(scriptId)}&key=${enc(key)}").opt("value")
-    suspend fun stateSet(platformUid: String, scriptId: String, key: String, value: Any?) =
-        put("/api/mobile/state", JSONObject().put("platform", "tiktok").put("platform_uid", platformUid)
+    suspend fun stateGet(platformUid: String, scriptId: String, key: String, platform: String = "tiktok"): Any? =
+        get("/api/mobile/state?platform=$platform&platform_uid=${enc(platformUid)}&script_id=${enc(scriptId)}&key=${enc(key)}").opt("value")
+    suspend fun stateSet(platformUid: String, scriptId: String, key: String, value: Any?, platform: String = "tiktok") =
+        put("/api/mobile/state", JSONObject().put("platform", platform).put("platform_uid", platformUid)
             .put("script_id", scriptId).put("key", key).put("value", value ?: JSONObject.NULL))
-    suspend fun leadsAdd(platformUid: String, handles: org.json.JSONArray, source: String, maxLeads: Int) =
-        post("/api/mobile/leads/add", JSONObject().put("platform", "tiktok").put("platform_uid", platformUid)
+    suspend fun leadsAdd(platformUid: String, handles: org.json.JSONArray, source: String, maxLeads: Int, platform: String = "tiktok") =
+        post("/api/mobile/leads/add", JSONObject().put("platform", platform).put("platform_uid", platformUid)
             .put("handles", handles).put("source", source).put("max_leads", maxLeads))
-    suspend fun leadsNext(platformUid: String, limit: Int) =
-        get("/api/mobile/leads/next?platform=tiktok&platform_uid=${enc(platformUid)}&limit=$limit")
-    suspend fun leadsMark(platformUid: String, handle: String, status: String, action: String, note: String) =
-        post("/api/mobile/leads/mark", JSONObject().put("platform", "tiktok").put("platform_uid", platformUid)
+    suspend fun leadsNext(platformUid: String, limit: Int, platform: String = "tiktok") =
+        get("/api/mobile/leads/next?platform=$platform&platform_uid=${enc(platformUid)}&limit=$limit")
+    suspend fun leadsMark(platformUid: String, handle: String, status: String, action: String, note: String, platform: String = "tiktok") =
+        post("/api/mobile/leads/mark", JSONObject().put("platform", platform).put("platform_uid", platformUid)
             .put("handle", handle).put("status", status).put("action", action).put("note", note))
 
     /**

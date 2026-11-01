@@ -74,6 +74,13 @@ object Prefs {
         get() = sp.getString(K_BINDING, "") ?: ""
         set(v) = sp.edit().putString(K_BINDING, v).apply()
 
+    /** Bound account per platform (2026-11-02: 抖音 / 小紅書). TikTok keeps using [bindingJson] (older code paths read it). */
+    fun bindingFor(platform: String): String =
+        if (platform == "tiktok") bindingJson else (sp.getString("binding_$platform", "") ?: "")
+    fun setBindingFor(platform: String, v: String) {
+        if (platform == "tiktok") bindingJson = v else sp.edit().putString("binding_$platform", v).apply()
+    }
+
     /** Epoch millis until which runs are blocked after a challenge (FR-08). */
     /** The phone's task list as a JSON array (source of truth is the server; this is the offline copy). */
     var tasksJson: String
@@ -181,6 +188,6 @@ object Prefs {
     fun flag(name: String): Boolean = runCatching { org.json.JSONObject(flagsJson).optBoolean(name, false) }.getOrDefault(false)
 
     fun logout() {
-        sp.edit().remove(K_TOKEN).remove(K_WALLET).remove(K_TASK).remove(K_TASKS).remove(K_BINDING).remove(K_OVER).remove(K_PHONE_LIMIT).remove(K_ACCOUNT).remove(K_STATS).remove(K_RUNS).remove(K_HIDDEN).remove("mobile_flags").apply()   // 功能开关跟着账号走,换账号不带过去
+        sp.edit().remove(K_TOKEN).remove(K_WALLET).remove(K_TASK).remove(K_TASKS).remove(K_BINDING).remove(K_OVER).remove(K_PHONE_LIMIT).remove(K_ACCOUNT).remove(K_STATS).remove(K_RUNS).remove(K_HIDDEN).remove("mobile_flags").remove("binding_douyin").remove("binding_xhs").apply()   // 功能开关跟着账号走,换账号不带过去
     }
 }

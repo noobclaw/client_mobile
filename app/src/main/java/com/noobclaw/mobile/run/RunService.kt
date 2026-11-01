@@ -46,7 +46,8 @@ class RunService : Service() {
     @Volatile private var nextHbMs = HEARTBEAT_MS   // 服务器给的下次心跳间隔
     @Volatile private var lastTasksAt = 0L          // 服務器任務列表的最後修改時間(心跳帶回)
     private val lastTry = HashMap<String, Long>() // every-N tasks: last time the scheduler tried to start them
-    private val slotRejectedAt = HashMap<String, Long>() // task id → when the server refused it for concurrency_limit
+    private val slotRejectedAt = HashMap<String, Long>()
+    @Volatile private var detectPlatform = "tiktok"   // 正在 / 剛剛檢測帳號的平台 // task id → when the server refused it for concurrency_limit
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -60,10 +61,16 @@ class RunService : Service() {
             }
             ACTION_RUN_NOW -> startRun("manual-" + System.currentTimeMillis(), dryRun = false, taskId = intent.getStringExtra(EXTRA_TASK_ID))
             ACTION_DRY_RUN -> startRun("dry-" + System.currentTimeMillis(), dryRun = true, taskId = intent.getStringExtra(EXTRA_TASK_ID))
-            // 檢測帳號:只打開 TikTok 讀「我的」頁的帳號,不點讚不評論(沒帳號就不能建任務)
-            ACTION_DETECT_ACCOUNT -> startRun("detect-" + System.currentTimeMillis(), dryRun = true, taskId = null, synthetic = JSONObject()
-                .put("id", "detect").put("script_id", "tiktok_comment_like").put("platform", "tiktok").put("detect_only", true)
-                .put("max_run_minutes", 5).put("config", JSONObject().put("comment_mode", "keywords").put("keywords", org.json.JSONArray().put("tiktok"))))
+            // 檢測帳號:只打開這個平台的 App 讀「我」頁的帳號,不點讚不評論(沒帳號就不能建任務)
+            ACTION_DETECT_ACCOUNT -> {
+                val p = intent.getStringExtra(EXTRA_PLATFORM)?.takeIf { it in A11yGuard.PLATFORM_PACKAGES } ?: "tiktok"
+                detectPlatform = p
+                val sid = when (p) { "douyin" -> "douyin_auto_engage"; "xhs" -> "xhs_auto_engage"; else -> "tiktok_comment_like" }
+                startRun("detect-" + System.currentTimeMillis(), dryRun = true, taskId = null, synthetic = JSONObject()
+                    .put("id", "detect").put("script_id", sid).put("platform", p).put("detect_only", true)
+                    .put("max_run_minutes", 5).put("config", JSONObject().put("comment_mode", "keywords").put("engage_mode", "search")
+                        .put("keywords", org.json.JSONArray().put(if (p == "tiktok") "tiktok" else "美食"))))
+            }
             ACTION_CAPTURE, ACTION_CAPTURE_NOW -> if (captureJob?.isActive != true) {
                 val wait = intent?.action == ACTION_CAPTURE
                 captureJob = scope.launch {
@@ -153,6 +160,8 @@ class RunService : Service() {
                 .put("running", currentRun?.isActive == true)
                 .put("cooldown_until", Prefs.cooldownUntil)
                 .put("progress", if (currentRun?.isActive == true) liveProgress() ?: JSONObject.NULL else JSONObject.NULL)
+                // 裝了哪些平台 App(電腦端據此顯示 抖音 / 小紅書 能不能建任務)
+                .put("apps", JSONObject().apply { for (p in A11yGuard.PLATFORM_PACKAGES.keys) put(p, targetAppInfo(p) != null) })
         )
         nextHbMs = r.optLong("next_hb_ms", HEARTBEAT_MS).coerceIn(10_000L, 120_000L)
         // 會員可用手機數:超出的手機不跑任務(服務器也不下發劇本)。
@@ -246,9 +255,10 @@ class RunService : Service() {
             runningRunId = runId
             runStartedAt = started
             report.put("task_id", runningTaskId)
-            val binding = runCatching { JSONObject(Prefs.bindingJson) }.getOrElse { JSONObject() } // filled by the script (setAccount)
+            val plat = Prefs.platformOf(task)
+            val binding = runCatching { JSONObject(Prefs.bindingFor(plat)) }.getOrElse { JSONObject() } // filled by the script (setAccount)
             report.put("late_sec", Schedule.lateSeconds(task, slotKey, ZonedDateTime.now()))
-            val (pkg, ver) = targetAppInfo() ?: run { report.put("status", "skipped").put("reason", "app_not_installed"); return }
+            val (pkg, ver) = targetAppInfo(plat) ?: run { report.put("status", "skipped").put("reason", "app_not_installed"); return }
             if (!dryRun && synthetic == null) { prevLastStart = Prefs.lastStart(task.optString("id")) ?: 0L; Prefs.setLastStart(task.optString("id"), started) } // the run really starts: "every N hours" counts from here
             RunLog.i(tr("開始運行", "Run started") + "（" + (if (dryRun) tr("試跑", "dry run") else tr("正式", "live")) + "）· $pkg v$ver", runId)
             val pack = ScriptLoader.load(task.optString("script_id", "tiktok_comment_like"), ver, if (synthetic != null) "detect" else "")
@@ -386,8 +396,8 @@ class RunService : Service() {
         if (!dryRun) runCatching { Api.notify("challenge:$kind", "TikTok 出現驗證（$kind），任務已停止並冷卻 $hours 小時，請在這台雲手機上手動處理。") }
     }
 
-    private fun targetAppInfo(): Pair<String, Long>? {
-        for (pkg in A11yGuard.PLATFORM_PACKAGES.getValue("tiktok")) {
+    private fun targetAppInfo(platform: String = "tiktok"): Pair<String, Long>? {
+        for (pkg in A11yGuard.PLATFORM_PACKAGES[platform] ?: A11yGuard.PLATFORM_PACKAGES.getValue("tiktok")) {
             val pi = runCatching { packageManager.getPackageInfo(pkg, 0) }.getOrNull() ?: continue
             return pkg to pi.longVersionCode
         }
@@ -402,7 +412,7 @@ class RunService : Service() {
 
     /** 「检测账号」结束:提示读到了没有,并回到 NoobClaw(用户点按钮时就在 App 里,检测完应该回来建任务)。 */
     private fun detectFinished(refused: Boolean) {
-        val handle = runCatching { JSONObject(Prefs.bindingJson).optString("display_id") }.getOrDefault("")
+        val handle = runCatching { JSONObject(Prefs.bindingFor(detectPlatform)).optString("display_id") }.getOrDefault("")
         val msg = when {
             handle.isNotEmpty() -> tr("讀取成功：", "Account found: ") + handle
             refused -> tr("檢測沒能開始，請稍後再試", "Couldn't start detecting — try again later")
@@ -449,6 +459,7 @@ class RunService : Service() {
         const val ACTION_SHUTDOWN = "com.noobclaw.mobile.SHUTDOWN"
         const val ACTION_CAPTURE = "com.noobclaw.mobile.CAPTURE"
         const val ACTION_CAPTURE_NOW = "com.noobclaw.mobile.CAPTURE_NOW"
+        const val EXTRA_PLATFORM = "platform"
         const val EXTRA_TASK_ID = "task_id"
 
         /** Id of the task running right now (null when idle); the UI reads it to show "運行中". */
@@ -464,10 +475,11 @@ class RunService : Service() {
             return p.put("run_id", run).put("task_id", runningTaskId ?: "").put("started_at", runStartedAt)
         }
 
-        fun start(ctx: Context, action: String? = null, taskId: String? = null) {
+        fun start(ctx: Context, action: String? = null, taskId: String? = null, platform: String? = null) {
             val i = Intent(ctx, RunService::class.java)
             if (action != null) i.action = action
             if (taskId != null) i.putExtra(EXTRA_TASK_ID, taskId)
+            if (platform != null) i.putExtra(EXTRA_PLATFORM, platform)
             ctx.startForegroundService(i)
         }
     }

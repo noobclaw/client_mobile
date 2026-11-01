@@ -81,13 +81,24 @@ class MainActivity : AppCompatActivity() {
     // ---------- scripts / platforms ----------
     private val CL = "tiktok_comment_like"
     private val LEAD = "tiktok_lead_engage"
-    private fun scriptTitle(id: String) = if (id == LEAD) tr("定向獲客任務", "Lead task") else tr("評論區點讚任務", "Comment-like task")
-    private fun scriptShort(id: String) = if (id == LEAD) tr("定向獲客", "Lead engage") else tr("評論區點讚", "Comment likes")
-    private fun scriptDesc(id: String) = if (id == LEAD) tr("找客戶，點讚、評論、關注", "Find leads: like, comment, follow")
-        else tr("給評論點讚，AI 回覆", "Like comments, AI replies")
+    private fun isLeadId(id: String) = id.endsWith("_lead_engage")
+    /** 抖音 / 小紅書「互動漲粉」(2026-11-02) */
+    private fun isEngageId(id: String) = id.endsWith("_auto_engage")
+    private fun scriptsFor(platform: String) = when (platform) {
+        "douyin" -> listOf("douyin_auto_engage", "douyin_lead_engage")
+        "xhs" -> listOf("xhs_auto_engage", "xhs_lead_engage")
+        else -> listOf(CL, LEAD)
+    }
+    private fun scriptTitle(id: String) = when { isLeadId(id) -> tr("定向獲客任務", "Lead task"); isEngageId(id) -> tr("互動漲粉任務", "Engagement task"); else -> tr("評論區點讚任務", "Comment-like task") }
+    private fun scriptShort(id: String) = when { isLeadId(id) -> tr("定向獲客", "Lead engage"); isEngageId(id) -> tr("互動漲粉", "Engagement"); else -> tr("評論區點讚", "Comment likes") }
+    private fun scriptDesc(id: String) = when {
+        isLeadId(id) -> tr("找客戶，點讚、評論、關注", "Find leads: like, comment, follow")
+        isEngageId(id) -> tr("搜作品點讚、收藏、關注、評論", "Find posts: like, save, follow, comment")
+        else -> tr("給評論點讚，AI 回覆", "Like comments, AI replies")
+    }
 
     private data class Platform(val id: String, val live: Boolean)
-    private val allPlatforms = listOf(Platform("tiktok", true), Platform("douyin", false), Platform("xhs", false))
+    private val allPlatforms = listOf(Platform("tiktok", true), Platform("douyin", true), Platform("xhs", true))
     private fun platformName(id: String) = when (id) { "douyin" -> tr("抖音", "Douyin"); "xhs" -> tr("小紅書", "RedNote"); else -> "TikTok" }
     /** Platforms not hidden by the backend compliance switch. */
     private fun visiblePlatforms() = allPlatforms.filter { it.id !in Prefs.hiddenPlatforms }
@@ -108,7 +119,7 @@ class MainActivity : AppCompatActivity() {
         val n = t.optString("name").trim()
         val sid = t.optString("script_id")
         return when {
-            n.isEmpty() || n == "評論區點讚任務" || n == "定向獲客任務" -> scriptTitle(sid)
+            n.isEmpty() || n == "評論區點讚任務" || n == "定向獲客任務" || n == "互動漲粉任務" -> scriptTitle(sid)
             n.startsWith("評論區點讚 · ") -> tr("評論區點讚", "Comment likes") + " · " + n.removePrefix("評論區點讚 · ")
             n.startsWith("定向獲客 · ") -> tr("定向獲客", "Lead engage") + " · " + n.removePrefix("定向獲客 · ")
             else -> n
@@ -541,10 +552,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     // ---------- tab 1: the cloud-phone card ----------
-    private fun binding(): JSONObject = runCatching { JSONObject(Prefs.bindingJson) }.getOrElse { JSONObject() }
-    private fun tiktokHandle() = binding().optString("display_id")
+    /** Bound account of the current tab's platform. */
+    private fun binding(platform: String = currentTab()): JSONObject = runCatching { JSONObject(Prefs.bindingFor(platform)) }.getOrElse { JSONObject() }
 
-    private fun tiktokInstalled(): Boolean = A11yGuard.PLATFORM_PACKAGES.getValue("tiktok").any { pkg ->
+    private fun appInstalled(platform: String = currentTab()): Boolean = (A11yGuard.PLATFORM_PACKAGES[platform] ?: emptyList()).any { pkg ->
         runCatching { packageManager.getPackageInfo(pkg, 0) }.isSuccess
     }
 
@@ -706,35 +717,35 @@ class MainActivity : AppCompatActivity() {
             ui.small(tr("＋ 創建任務", "＋ Create task"), if (enabled) C.ON_ACCENT else C.TEXT, if (enabled) C.ACCENT else C.SURFACE, if (enabled) null else C.BORDER, enabled) { newTask() }
                 .apply { setPadding(ui.dp(18), ui.dp(9), ui.dp(18), ui.dp(9)) }
         }
-        if (!tiktokInstalled()) {
-            body.addView(emptyBox(tr("未檢測到 TikTok 應用", "TikTok app not found"),
-                tr("請先在這臺手機上安裝 TikTok，再創建任務", "Install TikTok on this phone first, then create a task"), true, createBtn(false)))
+        if (!appInstalled(tab)) {
+            body.addView(emptyBox(tr("未檢測到 $name 應用", "$name app not found"),
+                tr("請先在這臺手機上安裝 $name，再創建任務", "Install $name on this phone first, then create a task"), true, createBtn(false)))
             return p
         }
         val acct = accountRow()
         if (acct != null) {
             body.addView(acct, ui.lp(bottom = 8)); body.addView(ui.divider(), ui.lp(h = 1, bottom = 10))
         }
-        val t = taskFor("tiktok")
+        val t = taskFor(tab)
         if (acct == null && t == null) {
-            // 和電腦端一致:沒識別到平台帳號不能建任務。點「檢測帳號」打開 TikTok 讀一下帳號(不點讚不評論)
+            // 和電腦端一致:沒識別到平台帳號不能建任務。點「檢測帳號」打開這個平台的 App 讀一下帳號(不點讚不評論)
             val detecting = RunService.runningTaskId == "detect"
             val btn = ui.small(if (detecting) tr("正在檢測…", "Detecting…") else tr("檢測帳號", "Detect account"),
                 C.ON_ACCENT, C.ACCENT, null, !detecting) {
-                withRunPerms { RunService.start(this, RunService.ACTION_DETECT_ACCOUNT); toast(tr("正在打開 TikTok 檢測帳號…", "Opening TikTok to detect the account…")) }
+                withRunPerms { RunService.start(this, RunService.ACTION_DETECT_ACCOUNT, platform = tab); toast(tr("正在打開 $name 檢測帳號…", "Opening $name to detect the account…")) }
             }.apply { setPadding(ui.dp(18), ui.dp(9), ui.dp(18), ui.dp(9)) }
-            body.addView(emptyBox(tr("未檢測到 TikTok 帳號", "No TikTok account detected"),
-                tr("請在這臺手機上打開 TikTok 並登錄帳號，再點「檢測帳號」，識別到後就能創建任務", "Log in to TikTok on this phone, then tap Detect account — you can create a task once it's found"), true, btn))
+            body.addView(emptyBox(tr("未檢測到 $name 帳號", "No $name account detected"),
+                tr("請在這臺手機上打開 $name 並登錄帳號，再點「檢測帳號」，識別到後就能創建任務", "Log in to $name on this phone, then tap Detect account — you can create a task once it's found"), true, btn))
             return p
         }
         if (acct == null) {
             val w = ui.col().apply { setPadding(ui.dp(10), ui.dp(8), ui.dp(10), ui.dp(8)); background = ui.shape(ui.alpha(C.WARN, 14), 10, ui.alpha(C.WARN, 80)) }
-            w.addView(ui.text(tr("未檢測到 TikTok 帳號", "No TikTok account detected yet"), 13f, C.WARN, true))
+            w.addView(ui.text(tr("未檢測到 $name 帳號", "No $name account detected yet"), 13f, C.WARN, true))
             w.addView(ui.text(tr("運行時會自動識別帳號", "The next run detects the account"), 12f, C.SUB))
             body.addView(w, ui.lp(bottom = 10))
         }
         if (t == null) {
-            body.addView(emptyBox(tr("TikTok 還沒有任務", "No TikTok task yet"), tr("每個平台可以建 1 個任務", "One task per platform"), false, createBtn(true)))
+            body.addView(emptyBox(tr("$name 還沒有任務", "No $name task yet"), tr("每個平台可以建 1 個任務", "One task per platform"), false, createBtn(true)))
             return p
         }
         taskBlock(t, body)
@@ -743,17 +754,19 @@ class MainActivity : AppCompatActivity() {
 
     private fun isKeywordMode(t: JSONObject): Boolean {
         val c = t.optJSONObject("config") ?: JSONObject()
-        return if (t.optString("script_id") == LEAD) c.optString("mode") != "accounts" else c.optString("comment_mode") == "keywords"
+        val sid = t.optString("script_id")
+        return if (isLeadId(sid)) c.optString("mode") != "accounts" else if (isEngageId(sid)) c.optString("engage_mode") != "precise" else c.optString("comment_mode") == "keywords"
     }
     private fun strs(a: JSONArray?): List<String> = if (a == null) emptyList() else (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() }
     private fun keywordsOf(t: JSONObject) = strs(t.optJSONObject("config")?.optJSONArray("keywords"))
     private fun targetsOf(t: JSONObject): List<String> {
         val c = t.optJSONObject("config") ?: JSONObject()
-        return strs(if (t.optString("script_id") == LEAD) c.optJSONArray("seed_accounts") else c.optJSONArray("urls"))
+        val sid = t.optString("script_id")
+        return strs(if (isLeadId(sid)) c.optJSONArray("seed_accounts") else if (isEngageId(sid)) c.optJSONArray("precise_urls") else c.optJSONArray("urls"))
     }
     private fun targetLabel(t: JSONObject) = when {
         isKeywordMode(t) -> tr("關鍵詞", "Keywords")
-        t.optString("script_id") == LEAD -> tr("同行帳號", "Competitors")
+        isLeadId(t.optString("script_id")) -> tr("同行帳號", "Competitors")
         else -> tr("鏈接", "Links")
     }
     private fun targetText(t: JSONObject): String {
@@ -813,7 +826,9 @@ class MainActivity : AppCompatActivity() {
     /** "點讚 1,286 · 回覆 174" / "新客戶 214 · 關注 120 · 評論 86". */
     private fun countsText(sid: String, c: JSONObject?): String {
         val m = c ?: JSONObject()
-        return if (sid == LEAD) tr("新客戶 ${fmtNum(m.optLong("lead_new"))} · 關注 ${fmtNum(m.optLong("follow"))} · 評論 ${fmtNum(m.optLong("comment"))}",
+        if (isEngageId(sid)) return tr("點讚 ${fmtNum(m.optLong("like"))} · 收藏 ${fmtNum(m.optLong("favorite"))} · 關注 ${fmtNum(m.optLong("follow"))} · 評論 ${fmtNum(m.optLong("comment"))}",
+            "${fmtNum(m.optLong("like"))} likes · ${fmtNum(m.optLong("favorite"))} saves · ${fmtNum(m.optLong("follow"))} follows · ${fmtNum(m.optLong("comment"))} comments")
+        return if (isLeadId(sid)) tr("新客戶 ${fmtNum(m.optLong("lead_new"))} · 關注 ${fmtNum(m.optLong("follow"))} · 評論 ${fmtNum(m.optLong("comment"))}",
             "${fmtNum(m.optLong("lead_new"))} leads · ${fmtNum(m.optLong("follow"))} follows · ${fmtNum(m.optLong("comment"))} comments")
         else tr("點讚 ${fmtNum(m.optLong("like"))} · 回覆 ${fmtNum(m.optLong("comment"))}", "${fmtNum(m.optLong("like"))} likes · ${fmtNum(m.optLong("comment"))} replies")
     }
@@ -836,7 +851,7 @@ class MainActivity : AppCompatActivity() {
         btns.addView(gap(8))
         btns.addView(ui.small(tr("查看", "View")) { go(Screen.DETAIL) }, ui.weight())
         btns.addView(gap(8))
-        btns.addView(ui.small(tr("▶ 運行", "▶ Run"), C.ON_ACCENT, C.ACCENT, null, tiktokInstalled()) { runTask(id) }, ui.weight())
+        btns.addView(ui.small(tr("▶ 運行", "▶ Run"), C.ON_ACCENT, C.ACCENT, null, appInstalled(platformOf(t))) { runTask(id) }, ui.weight())
         body.addView(btns)
     }
 
@@ -854,9 +869,11 @@ class MainActivity : AppCompatActivity() {
 
     // ---------- running state ----------
     private data class Item(val icon: String, val key: String)
-    private fun progressItems(sid: String) = if (sid == LEAD)
-        listOf(Item("👤", "lead_new"), Item("👍", "like"), Item("💬", "comment"), Item("➕", "follow"))
-        else listOf(Item("👍", "like"), Item("💬", "comment"))
+    private fun progressItems(sid: String) = when {
+        isLeadId(sid) -> listOf(Item("👤", "lead_new"), Item("👍", "like"), Item("💬", "comment"), Item("➕", "follow"))
+        isEngageId(sid) -> listOf(Item("👍", "like"), Item("⭐", "favorite"), Item("➕", "follow"), Item("💬", "comment"))
+        else -> listOf(Item("👍", "like"), Item("💬", "comment"))
+    }
 
     /** "進度 👍 6/100 💬 1/15" and "消耗 💎 4,820". */
     private fun progressBox(sid: String, big: Boolean): View {
@@ -947,20 +964,22 @@ class MainActivity : AppCompatActivity() {
 
         val head = ui.card(selected = running)
         val tr0 = ui.row()
-        tr0.addView(ui.badge("TT", Color.BLACK, Color.WHITE, 36).apply { background = ui.shape(Color.BLACK, 18, C.CYAN, 2) })
+        tr0.addView(ui.badge(when (platformOf(t)) { "douyin" -> "抖"; "xhs" -> "紅"; else -> "TT" }, Color.BLACK, Color.WHITE, 36).apply { background = ui.shape(Color.BLACK, 18, C.CYAN, 2) })
         val tt = ui.col().apply { setPadding(ui.dp(10), 0, 0, 0) }
         tt.addView(ui.text(taskName(t), 17f, C.TEXT, true))
         tt.addView(ui.mono(tr("設備ID ", "Device ") + shortId(Prefs.deviceId), 11f, C.SUB).apply { maxLines = 1; ellipsize = TextUtils.TruncateAt.END })
         tr0.addView(tt, ui.weight())
         head.addView(tr0, ui.lp(bottom = 12))
-        val b = binding()
+        val b = binding(platformOf(t))
         head.addView(ui.kv(tr("帳號", "Account"), (listOf(b.optString("nickname"), b.optString("display_id")).filter { it.isNotEmpty() }.joinToString(" ")
             .ifEmpty { tr("未識別", "Not detected") }) + " · " + Build.MANUFACTURER + "/" + Build.MODEL))
         head.addView(ui.kv(tr("模式", "Mode"), (if (isKeywordMode(t)) "🔎 " else "🎯 ") + modeText(t)))
         head.addView(ui.kv(targetLabel(t), targetText(t)))
-        head.addView(ui.kv(tr("每次上限", "Per run"), if (sid == LEAD)
-            tr("新客戶 ${t.optJSONObject("config")?.optInt("leads_per_run", 30) ?: 30} · 關注 ${t.optInt("max_follows")} · 評論 ${t.optInt("max_comments")}",
-                "${t.optJSONObject("config")?.optInt("leads_per_run", 30) ?: 30} leads · ${t.optInt("max_follows")} follows · ${t.optInt("max_comments")} comments")
+        head.addView(ui.kv(tr("每次上限", "Per run"), if (isLeadId(sid))
+            tr("點讚目標 ${t.optInt("max_likes")} · 關注 ${t.optInt("max_follows")} · 評論 ${t.optInt("max_comments")}",
+                "like target ${t.optInt("max_likes")} · ${t.optInt("max_follows")} follows · ${t.optInt("max_comments")} comments")
+            else if (isEngageId(sid)) tr("點讚 ${t.optInt("max_likes")} · 收藏 ${t.optJSONObject("config")?.optInt("max_favorites") ?: 0} · 關注 ${t.optInt("max_follows")} · 評論 ${t.optInt("max_comments")}",
+                "${t.optInt("max_likes")} likes · ${t.optJSONObject("config")?.optInt("max_favorites") ?: 0} saves · ${t.optInt("max_follows")} follows · ${t.optInt("max_comments")} comments")
             else tr("點讚 ${t.optInt("max_likes")} · 回覆 ${t.optInt("max_comments")}", "${t.optInt("max_likes")} likes · ${t.optInt("max_comments")} replies")))
         head.addView(ui.kv(tr("人設", "Persona"), t.optString("persona").ifEmpty { "—" }))
         head.addView(ui.kv(tr("定時", "Schedule"), scheduleText(t) + if (Schedule.kind(t) !is Schedule.Kind.Manual) tr(" · 自動運行", " · automatic") else ""))
@@ -973,7 +992,7 @@ class MainActivity : AppCompatActivity() {
             acts.addView(gap(8))
             acts.addView(ui.small(tr("刪除", "Delete"), C.DANGER, C.SURFACE, ui.alpha(C.DANGER, 100)) { confirmDelete(t) }, ui.weight())
             acts.addView(gap(8))
-            acts.addView(ui.small(tr("立即運行", "Run now"), C.ON_ACCENT, C.ACCENT, null, tiktokInstalled()) { runTask(id) }, ui.weight())
+            acts.addView(ui.small(tr("立即運行", "Run now"), C.ON_ACCENT, C.ACCENT, null, appInstalled(platformOf(t))) { runTask(id) }, ui.weight())
         }
         head.addView(acts)
         add(head, bottom = 12)
@@ -1272,8 +1291,8 @@ class MainActivity : AppCompatActivity() {
     private fun newTask() {
         if (taskFor(currentTab()) != null) { toast(tr("每個平台只能建 1 個任務", "One task per platform")); return }
         if (missingPerms().isNotEmpty()) { toast(tr("請先開啟全部 3 個權限", "Turn on all three permissions first")); go(Screen.PERMS); return }
-        if (accountRow() == null) { toast(tr("請先檢測 TikTok 帳號", "Detect the TikTok account first")); return }
-        draft = JSONObject().put("script_id", CL).put("schedule", Schedule.toJson(Schedule.Kind.Daily(LocalTime.of(9, 30)))) // 新建默認每天定時
+        if (accountRow() == null) { toast(tr("請先檢測 ${platformName(currentTab())} 帳號", "Detect the ${platformName(currentTab())} account first")); return }
+        draft = JSONObject().put("script_id", scriptsFor(currentTab()).first()).put("platform", currentTab()).put("schedule", Schedule.toJson(Schedule.Kind.Daily(LocalTime.of(9, 30)))) // 新建默認每天定時
         configBack = Screen.HOME
         go(Screen.CONFIG)
     }
@@ -1287,10 +1306,12 @@ class MainActivity : AppCompatActivity() {
     private fun renderConfig() {
         val d = draft ?: JSONObject().put("script_id", CL).also { draft = it }
         val editing = d.optBoolean("_editing")
+        val plat = Prefs.platformOf(d)
         topBar(if (editing) tr("編輯任務", "Edit task") else tr("創建任務", "Create task")) { go(configBack) }
-        add(ui.sub("TikTok · " + tr("每個平台 1 個任務", "one task per platform")), bottom = 16)
+        add(ui.sub(platformName(plat) + " · " + tr("每個平台 1 個任務", "one task per platform")), bottom = 16)
 
-        var script = d.optString("_script").ifEmpty { d.optString("script_id").ifEmpty { CL } }
+        var script = d.optString("_script").ifEmpty { d.optString("script_id").ifEmpty { scriptsFor(plat).first() } }
+        if (script !in scriptsFor(plat)) script = scriptsFor(plat).first()
         // draft keeps both lists, so switching mode / script does not lose what was typed
         if (!d.has("_kw")) d.put("_kw", keywordsOf(d).joinToString("\n"))
         if (!d.has("_tg")) d.put("_tg", targetsOf(d).joinToString("\n"))
@@ -1304,10 +1325,14 @@ class MainActivity : AppCompatActivity() {
         // 定向獲客(和瀏覽器任務一致):評論總量 > 0 才有「評論」這一步
         val leadCmtOn = !clNow && (if (d.has("_lComment")) (d.optString("_lComment").toIntOrNull() ?: 0) > 0
             else d.optJSONObject("config")?.optBoolean("lead_do_comment", true) != false && d.optInt("max_comments", 0) > 0)
-        val steps = if (!clNow) (if (leadCmtOn) listOf("task", "lvl", "cmt", "freq") else listOf("task", "lvl", "freq")) else if (replyOn) listOf("task", "act", "cmt", "freq") else listOf("task", "act", "freq")
+        // 互動漲粉(抖音 / 小紅書):任務 → 動作與數量 → 評論(評論數 > 0 才有)→ 頻率
+        val engNow = isEngageId(script)
+        val engCmtOn = engNow && (if (d.has("_eComment")) (d.optString("_eComment").toIntOrNull() ?: 0) > 0 else d.optInt("max_comments", 0) > 0)
+        val steps = if (engNow) (if (engCmtOn) listOf("task", "eact", "cmt", "freq") else listOf("task", "eact", "freq"))
+            else if (!clNow) (if (leadCmtOn) listOf("task", "lvl", "cmt", "freq") else listOf("task", "lvl", "freq")) else if (replyOn) listOf("task", "act", "cmt", "freq") else listOf("task", "act", "freq")
         val stepNow = d.optString("_step").takeIf { it in steps } ?: "task"
         val stepIdx = steps.indexOf(stepNow)
-        fun stepLabel(k: String) = when (k) { "task" -> tr("任務", "Task"); "act" -> tr("動作", "Actions"); "cmt" -> tr("評論", "Replies"); "lvl" -> tr("數量", "Amount"); else -> tr("頻率", "Schedule") }
+        fun stepLabel(k: String) = when (k) { "task" -> tr("任務", "Task"); "act", "eact" -> tr("動作", "Actions"); "cmt" -> tr("評論", "Replies"); "lvl" -> tr("數量", "Amount"); else -> tr("頻率", "Schedule") }
         val ind = ui.row()
         steps.forEachIndexed { i, k ->
             val on = i == stepIdx; val done = i < stepIdx
@@ -1322,7 +1347,7 @@ class MainActivity : AppCompatActivity() {
         // script
         add(ui.section(tr("劇本", "Script")), bottom = 8)
         val sRow = ui.row()
-        listOf(CL, LEAD).forEachIndexed { i, s ->
+        scriptsFor(plat).forEachIndexed { i, s ->
             val c = ui.card(selected = s == script, onClick = { d.put("_script", s); render() })
             c.addView(ui.text(scriptShort(s), 15f, if (s == script) C.ACCENT else C.TEXT, true))
             c.addView(ui.text(scriptDesc(s), 12f, C.SUB), ui.lp(top = 2))
@@ -1330,6 +1355,9 @@ class MainActivity : AppCompatActivity() {
         }
         add(sRow, bottom = 18)
         val cl = script == CL
+        val eng = isEngageId(script)
+        val tt = plat == "tiktok"
+        val postWord = if (plat == "xhs") tr("筆記", "notes") else tr("作品", "posts")
 
         // mode
         add(ui.section(tr("模式", "Mode")), bottom = 8)
@@ -1338,16 +1366,27 @@ class MainActivity : AppCompatActivity() {
         mRow.addView(ui.chip(tr("精準模式", "Precise mode"), !kwMode) { d.put("_kwMode", false); render() }, ui.weight())
         add(mRow, bottom = 6)
         add(ui.sub(when {
+            kwMode && eng -> tr("按關鍵詞搜$postWord，逐條點讚、收藏、關注、評論", "Searches $postWord by keyword: like, save, follow, comment")
+            kwMode && !cl && !eng -> tr("按關鍵詞搜$postWord，收評論區的人再互動", "Searches $postWord by keyword, collects their commenters, then engages them")
             kwMode -> tr("按關鍵詞搜視頻，在評論區互動", "Searches videos by keyword and works their comments")
             cl -> tr("只在你給的作品下互動；填用戶 ID 會做這個人主頁的作品", "Works only the videos you give; a user ID works that profile's videos")
+            eng -> tr("只在你給的$postWord / 主頁下互動", "Works only the $postWord / profiles you give")
             else -> tr("從同行帳號的粉絲和評論裡找客戶", "Finds leads among a competitor's commenters")
         }), bottom = 12)
 
-        val label = when { kwMode -> tr("關鍵詞（每行一個）", "Keywords (one per line)"); cl -> tr("作品鏈接 / 主頁鏈接 / 用戶 ID（每行一個）", "Video link / profile link / user ID (one per line)"); else -> tr("同行帳號（每行一個）", "Competitor accounts (one per line)") }
+        val label = when {
+            kwMode -> tr("關鍵詞（每行一個）", "Keywords (one per line)")
+            cl -> tr("作品鏈接 / 主頁鏈接 / 用戶 ID（每行一個）", "Video link / profile link / user ID (one per line)")
+            eng -> tr("$postWord 鏈接 / 主頁鏈接（每行一個）", "Post link / profile link (one per line)")
+            tt -> tr("同行帳號（每行一個）", "Competitor accounts (one per line)")
+            else -> tr("同行主頁鏈接 / $postWord 鏈接（每行一個）", "Competitor profile link / post link (one per line)")
+        }
         add(ui.section(label), bottom = 8)
         val where = ui.input(when {
-            kwMode -> tr("例如 latte art", "e.g. latte art")
+            kwMode -> if (tt) tr("例如 latte art", "e.g. latte art") else tr("例如 咖啡拉花", "e.g. latte art")
             cl -> tr("例如 @name 或 https://www.tiktok.com/@name/video/…", "e.g. @name or https://www.tiktok.com/@name/video/…")
+            plat == "douyin" -> tr("例如 https://v.douyin.com/… (在抖音裡點「分享 → 複製鏈接」)", "e.g. https://v.douyin.com/… (Share → Copy link in Douyin)")
+            plat == "xhs" -> tr("例如 https://xhslink.com/… (在小紅書裡點「分享 → 複製鏈接」)", "e.g. https://xhslink.com/… (Share → Copy link in RedNote)")
             else -> tr("例如 @rival", "e.g. @rival")
         }, if (kwMode) d.optString("_kw") else d.optString("_tg"), multi = true)
         where.addTextChangedListener(object : android.text.TextWatcher {
@@ -1379,9 +1418,22 @@ class MainActivity : AppCompatActivity() {
             d.put("_prob", oc?.optInt("cl_funnel_prob", 100) ?: 100)
         }
         // 定向獲客(和瀏覽器一致):採集不設上限;點讚數是目標(每個潛客都點,不夠回評論區補讚),關注 / 評論是本次總量(0 = 不做)
-        if (!cl && !d.has("_nLeads")) {
+        // 互動漲粉(抖音 / 小紅書):點讚 / 收藏 / 關注 / 評論的本次總量(0 = 不做)+ 每條最多評論幾條;評論可關 AI 只發引流語
+        if (eng && !d.has("_eLike")) {
+            val ec = if (isEngageId(d.optString("script_id"))) d.optJSONObject("config") else null
+            d.put("_eLike", (if (ec != null) d.optInt("max_likes", 30) else 30).toString())
+            d.put("_eFav", (ec?.optInt("max_favorites", 5) ?: 5).toString())
+            d.put("_eFollow", (if (ec != null) d.optInt("max_follows", 5) else 5).toString())
+            d.put("_eComment", (if (ec != null) d.optInt("max_comments", 10) else 10).toString())
+            d.put("_ePer", (ec?.optInt("max_comment_per_work", 1) ?: 1).toString())
+            d.put("_ai", ec?.optBoolean("cl_ai_comment", true) ?: true)
+            d.put("_funnel", strs(ec?.optJSONArray("cl_funnel")).joinToString("\n"))
+            d.put("_rw", ec?.optBoolean("cl_funnel_rewrite", true) ?: true)
+            d.put("_prob", ec?.optInt("cl_funnel_prob", 100) ?: 100)
+        }
+        if (!cl && !eng && !d.has("_nLeads")) {
             val lc = d.optJSONObject("config")
-            val isLeadTask = d.optString("script_id") != CL && lc != null
+            val isLeadTask = isLeadId(d.optString("script_id")) && lc != null
             fun amt(k: String, on: String, dflt: Int) = if (isLeadTask) (if (lc!!.optBoolean(on, true)) d.optInt(k, dflt) else 0) else dflt
             d.put("_nLeads", "1")   // 只當「已初始化」的標記
             d.put("_lLike", amt("max_likes", "lead_do_like", 300).toString())
@@ -1397,7 +1449,7 @@ class MainActivity : AppCompatActivity() {
             sec = "cmt"
             add(ui.section(if (isLead) tr("評論內容", "Comment content") else tr("評論內容", "Reply content")), bottom = 8)
             val ai = d.optBoolean("_ai")
-            add(switchRow(if (isLead) tr("AI 根據潛客作品自主評論", "AI writes comments from the lead's post") else tr("AI 根據評論自主回覆", "AI writes replies from the comment"), ai) { d.put("_ai", !ai); render() }, bottom = 12)
+            add(switchRow(if (eng) tr("AI 根據作品內容自主評論", "AI writes comments from the post") else if (isLead) tr("AI 根據潛客作品自主評論", "AI writes comments from the lead's post") else tr("AI 根據評論自主回覆", "AI writes replies from the comment"), ai) { d.put("_ai", !ai); render() }, bottom = 12)
             add(ui.sub(tr("引流語(選填,每行一句)", "Funnel lines (optional, one per line)")), bottom = 6)
             val fn = ui.input(tr("例如:主頁有教程", "e.g. Tutorial on my profile"), d.optString("_funnel"), multi = true)
             watch(fn, "_funnel")
@@ -1446,6 +1498,33 @@ class MainActivity : AppCompatActivity() {
                 "Empty max = no limit. Gap = seconds between actions; empty uses the default (likes 1 s, replies 30 s)")), bottom = 20)
 
             if (d.optBoolean("_doReply")) drawCmt(false)
+        } else if (eng) {
+            sec = "eact"
+            // 和瀏覽器的互動漲粉一樣:每個動作一個本次總量(0 = 不做)
+            add(ui.section(tr("動作與數量", "Actions & amounts")), bottom = 8)
+            val ebox = ui.col()
+            fun eRow(title: String, desc: String, key: String) {
+                val r = ui.row().apply { gravity = Gravity.CENTER_VERTICAL }
+                val c = ui.col()
+                c.addView(ui.text(title, 14f, C.TEXT, true))
+                c.addView(ui.text(desc, 12f, C.SUB), ui.lp(top = 2))
+                r.addView(c, ui.weight().apply { marginEnd = ui.dp(10) })
+                val et = ui.input("0", d.optString(key), number = true).apply {
+                    textSize = 14f; gravity = Gravity.CENTER; setPadding(ui.dp(6), ui.dp(7), ui.dp(6), ui.dp(7))
+                }
+                watch(et, key)
+                r.addView(et, LinearLayout.LayoutParams(ui.dp(76), ViewGroup.LayoutParams.WRAP_CONTENT))
+                ebox.addView(r, ui.lp(bottom = 14))
+            }
+            eRow(tr("👍 本次點讚", "👍 Likes this run"), tr("0 = 不點讚 · 最多 500", "0 = off · max 500"), "_eLike")
+            eRow(tr("⭐ 本次收藏", "⭐ Saves this run"), tr("0 = 不收藏 · 最多 100", "0 = off · max 100"), "_eFav")
+            eRow(tr("➕ 本次關注", "➕ Follows this run"), tr("關注作者 · 0 = 不關注 · 最多 100", "Follow the author · 0 = off · max 100"), "_eFollow")
+            eRow(tr("💬 本次評論", "💬 Comments this run"), tr("0 = 不評論 · 最多 100(下一步設置內容)", "0 = off · max 100 (content set next)"), "_eComment")
+            eRow(tr("每條$postWord 最多評論", "Comments per post"), tr("同一條最多評論幾條 · 1~5", "Max comments on one post · 1–5"), "_ePer")
+            add(ebox)
+            add(ui.sub(tr("每條$postWord 隨機做其中 1~2 個動作，額度用完就停;同一條以後不再重複互動。",
+                "Each post gets 1–2 of these actions at random; stops when the totals are used up. A post is never engaged twice.")), bottom = 20)
+            if (engCmtOn) drawCmt(true)
         } else {
             sec = "lvl"
             // 和瀏覽器的定向獲客一樣:本次潛客數 + 三個動作的本次總量
@@ -1548,10 +1627,12 @@ class MainActivity : AppCompatActivity() {
             // 用户 ID(@name / name / na.me)= 这个人的主页;手机上一般只看得到 ID,没有链接
             val idRe = Regex("^@?[A-Za-z0-9._]{2,24}$")
             val targets = if (cl) rawTargets.map { if (idRe.matches(it) && !it.equals("tiktok.com", true)) "https://www.tiktok.com/@" + it.removePrefix("@") else it.replace(Regex("^http://", RegexOption.IGNORE_CASE), "https://") }.filter { urlRe.matches(it) }.take(20)
-                else rawTargets.map { if (it.startsWith("http", true) || it.startsWith("@")) it else "@$it" }.take(20)
+                else if (tt) rawTargets.map { if (it.startsWith("http", true) || it.startsWith("@")) it else "@$it" }.take(20)
+                else rawTargets.map { it.replace(Regex("^http://", RegexOption.IGNORE_CASE), "https://") }.filter { it.startsWith("https://", true) }.take(50)
             if (kwMode && words.isEmpty()) { toast(tr("請填至少 1 個關鍵詞", "Add at least one keyword")); return null }
             if (!kwMode && targets.isEmpty()) {
                 toast(if (cl) tr("請填 TikTok 作品鏈接、主頁鏈接或用戶 ID", "Add a TikTok video link, profile link or user ID")
+                      else if (!tt) tr("請填至少 1 個鏈接(https://…)", "Add at least one link (https://…)")
                       else tr("請填至少 1 個同行帳號", "Add at least one competitor account"))
                 return null
             }
@@ -1578,6 +1659,20 @@ class MainActivity : AppCompatActivity() {
                     .put("cl_funnel_rewrite", d.optBoolean("_rw", true))
                     .put("cl_funnel_prob", if (ai) d.optInt("_prob", 100) else 100)
                 out.put("max_likes", ml ?: 1000).put("max_comments", mc ?: 300).put("max_follows", 0)
+            } else if (eng) {
+                fun n(k: String, lo: Int, hi: Int) = (d.optString(k).trim().toIntOrNull() ?: lo).coerceIn(lo, hi)
+                val el = n("_eLike", 0, 500); val ef = n("_eFav", 0, 100); val eo = n("_eFollow", 0, 100); val ec = n("_eComment", 0, 100)
+                if (el + ef + eo + ec == 0) { toast(tr("點讚、收藏、關注、評論至少一項大於 0", "Set at least one action above 0")); return null }
+                val ai = d.optBoolean("_ai", true)
+                val funnel = lines(d.optString("_funnel")).take(20).map { it.take(120) }
+                if (ec > 0 && !ai && funnel.isEmpty()) { toast(tr("關掉 AI 評論時請至少填一句引流語", "With AI comments off, add at least one funnel line")); return null }
+                cfg.put("engage_mode", if (kwMode) "search" else "precise")
+                    .put("keywords", JSONArray(words)).put("precise_urls", JSONArray(targets))
+                    .put("max_favorites", ef).put("max_comment_per_work", n("_ePer", 1, 5))
+                    .put("cl_ai_comment", ai).put("cl_funnel", JSONArray(funnel))
+                    .put("cl_funnel_rewrite", d.optBoolean("_rw", true))
+                    .put("cl_funnel_prob", if (ai) d.optInt("_prob", 100) else 100)
+                out.put("max_likes", el).put("max_comments", ec).put("max_follows", eo)
             } else {
                 fun n(k: String, lo: Int, hi: Int) = (d.optString(k).trim().toIntOrNull() ?: lo).coerceIn(lo, hi)
                 val ll = n("_lLike", 0, 5000); val lf = n("_lFollow", 0, 100); val lc = n("_lComment", 0, 100)
@@ -1595,13 +1690,13 @@ class MainActivity : AppCompatActivity() {
                 out.put("max_likes", ll).put("max_comments", lc).put("max_follows", lf)
             }
             // 默認名用繁體(跟服務器、電腦端一致);換了劇本就換成新劇本的默認名
-            val baseName = if (cl) "評論區點讚任務" else "定向獲客任務"
+            val baseName = if (cl) "評論區點讚任務" else if (eng) "互動漲粉任務" else "定向獲客任務"
             val keepName = sameScript && d.optString("name").isNotEmpty()
             val sc = Schedule.kind(d)
             return out
                 .put("id", d.optString("id").ifEmpty { "t" + System.currentTimeMillis().toString(36) })
                 .put("name", if (keepName) d.optString("name") else baseName)
-                .put("script_id", script).put("platform", "tiktok").put("config", cfg)
+                .put("script_id", script).put("platform", plat).put("config", cfg)
                 .put("schedule", Schedule.toJson(sc))
                 // legacy fields for apps < 0.6 (the server fills them too)
                 .put("enabled", sc !is Schedule.Kind.Manual)
@@ -1616,9 +1711,10 @@ class MainActivity : AppCompatActivity() {
         fun goStep(k: String) { d.put("_step", k); render(); scroll.scrollTo(0, 0) }
         fun checkStep(k: String): String? = when (k) {
             "task" -> if (kwMode && lines(d.optString("_kw")).isEmpty()) tr("請填至少 1 個關鍵詞", "Add at least one keyword")
-                else if (!kwMode && lines(d.optString("_tg")).isEmpty()) (if (cl) tr("請填 TikTok 作品鏈接或用戶 ID", "Add a TikTok video link or user ID") else tr("請填至少 1 個同行帳號", "Add at least one competitor account"))
+                else if (!kwMode && lines(d.optString("_tg")).isEmpty()) (if (cl) tr("請填 TikTok 作品鏈接或用戶 ID", "Add a TikTok video link or user ID") else if (!tt) tr("請填至少 1 個鏈接", "Add at least one link") else tr("請填至少 1 個同行帳號", "Add at least one competitor account"))
                 else null
             "act" -> if (!d.optBoolean("_doLike") && !d.optBoolean("_doReply")) tr("請至少開啟一個動作", "Turn on at least one action") else null
+            "eact" -> if (listOf("_eLike", "_eFav", "_eFollow", "_eComment").sumOf { d.optString(it).trim().toIntOrNull() ?: 0 } == 0) tr("點讚、收藏、關注、評論至少一項大於 0", "Set at least one action above 0") else null
             "lvl" -> if (listOf("_lLike", "_lFollow", "_lComment").sumOf { d.optString(it).trim().toIntOrNull() ?: 0 } == 0) tr("點讚、關注、評論至少一項大於 0", "Set at least one of likes, follows, comments above 0") else null
             "cmt" -> if (!d.optBoolean("_ai") && lines(d.optString("_funnel").replace(',', '\u0000').replace('，', '\u0000')).isEmpty()) tr("關掉 AI 回覆時請至少填一句引流語", "With AI replies off, add at least one funnel line") else null
             else -> null
@@ -1627,11 +1723,13 @@ class MainActivity : AppCompatActivity() {
         if (!last) {
             val nav = ui.row()
             if (stepIdx > 0) nav.addView(ui.secondary(tr("上一步", "Back")) { goStep(steps[stepIdx - 1]) }, ui.weight().apply { marginEnd = ui.dp(10) })
-            val dynNext = stepNow == "lvl" && !clNow   // 定向獲客:評論數剛改過,下一步是「評論」還是「頻率」按現在的值算
+            // 定向獲客 / 互動漲粉:評論數剛改過,下一步是「評論」還是「頻率」按現在的值算
+            val dynNext = (stepNow == "lvl" && !clNow) || stepNow == "eact"
+            val cmtKey = if (stepNow == "eact") "_eComment" else "_lComment"
             nav.addView(ui.primary(if (dynNext) tr("下一步", "Next") else tr("下一步：", "Next: ") + stepLabel(steps[stepIdx + 1])) {
                 val why = checkStep(stepNow)
                 if (why != null) { toast(why); return@primary }
-                goStep(if (dynNext) (if ((d.optString("_lComment").trim().toIntOrNull() ?: 0) > 0) "cmt" else "freq") else steps[stepIdx + 1])
+                goStep(if (dynNext) (if ((d.optString(cmtKey).trim().toIntOrNull() ?: 0) > 0) "cmt" else "freq") else steps[stepIdx + 1])
             }, ui.weight())
             this.add(nav, bottom = 10)
         } else {
