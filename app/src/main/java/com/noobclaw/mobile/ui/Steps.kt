@@ -28,6 +28,8 @@ object Steps {
             "open_comments" -> tr("打開視頻，看評論區", "Opening a video's comments")
             "ai_writing" -> tr("AI 正在寫回覆", "AI is writing a reply")
             "replied" -> trf("回覆已發出：“{}”", "Reply sent: \"{}\"", s("text"))
+            "liked" -> tr("點了一個讚", "Liked a post")
+            "commented" -> trf("評論已發出：“{}”", "Comment sent: \"{}\"", s("text"))
             "video_summary" -> tr("這條視頻：點讚 ${n("likes")} · 回覆 ${n("replies")}", "This video: ${n("likes")} likes · ${n("replies")} replies")
             "next_video" -> tr("換下一條視頻", "Next video")
             "reach_old_leads" -> tr("先聯繫之前找到的潛在客戶", "Reaching leads found earlier first")

@@ -194,7 +194,7 @@ class MainActivity : AppCompatActivity() {
     /** What the task screens show; when it changes (run starts / ends, progress, task list from the server) they re-render. */
     private fun signature(): String = listOf(
         RunService.runningTaskId, RunService.liveProgress()?.let { it.optJSONObject("counts")?.toString() + it.optLong("credits") },
-        Prefs.tasksJson.hashCode(), Prefs.bindingJson.hashCode(), Prefs.hiddenPlatforms.hashCode(), Prefs.overLimit,
+        Prefs.tasksJson.hashCode(), Prefs.bindingJson.hashCode(), Prefs.bindingFor("douyin").hashCode(), Prefs.bindingFor("xhs").hashCode(), Prefs.hiddenPlatforms.hashCode(), Prefs.overLimit,
         NcAccessibilityService.isRunning,
     ).joinToString("|")
 
@@ -933,7 +933,9 @@ class MainActivity : AppCompatActivity() {
         head.addView(progressBox(sid, false))
         p.addView(head, ui.lp().apply { setMargins(ui.dp(8), ui.dp(8), ui.dp(8), 0) })
         val body = ui.col().apply { setPadding(ui.dp(12), ui.dp(10), ui.dp(12), ui.dp(12)) }
-        accountRow()?.let { body.addView(it, ui.lp(bottom = 8)); body.addView(ui.divider(), ui.lp(h = 1, bottom = 8)) }
+        // 運行中的那個任務的平台帳號(不是當前標籤頁的)
+        (taskById(RunService.runningTaskId)?.let { platformOf(it) } ?: currentTab()).let { rp -> if (rp == currentTab()) accountRow() else null }
+            ?.let { body.addView(it, ui.lp(bottom = 8)); body.addView(ui.divider(), ui.lp(h = 1, bottom = 8)) }
         body.addView(stepList(RunService.runningRunId, 6, true), ui.lp(bottom = 12))
         val r = ui.row().apply { gravity = Gravity.CENTER }
         r.addView(ui.small(tr("■ 停止", "■ Stop"), Color.WHITE, C.DANGER, null) { RunService.start(this, RunService.ACTION_STOP_RUN) }
