@@ -115,6 +115,7 @@ class ScriptEngine(
     /** Live numbers for the heartbeat `progress` and the run view (safe to call from any thread). */
     /** End of the script's current wait (0 = not waiting), for the float ball's "what now" line. */
     @Volatile var sleepUntil = 0L
+    private val FRONT_ACTIONS = setOf("tap", "swipe", "input", "back", "scroll", "imeEnter")
     fun progress(): JSONObject = synchronized(statLock) {
         JSONObject().put("counts", JSONObject(counts.toString())).put("targets", JSONObject(targets.toString())).put("credits", credits)
             .put("sleep_until", sleepUntil)
@@ -224,7 +225,25 @@ const ctx = Object.freeze({
     private val bridgeLock = kotlinx.coroutines.sync.Mutex()
 
     /** One bridge call at a time, even if a script fires several without awaiting (state below is not thread-safe). */
-    private suspend fun dispatch(name: String, argJson: String): String = bridgeLock.withLock { dispatchLocked(name, argJson) }
+    private suspend fun dispatch(name: String, argJson: String): String = bridgeLock.withLock {
+        val r = dispatchLocked(name, argJson)
+        // The task's app was sent to the background (the user switched apps, a dialog of another app…): bring it back
+        // once and retry the screen action, instead of ending the run with guard_blocked. Capped per run so a person
+        // using the phone on purpose is not fought forever.
+        if (name in FRONT_ACTIONS && r.contains("guard_blocked") && recoverFront()) dispatchLocked(name, argJson) else r
+    }
+    private var frontRecoveries = 0
+    private suspend fun recoverFront(): Boolean {
+        val pkg = task.optString("target_package")
+        if (frontRecoveries >= 20 || pkg.isEmpty() || !A11yGuard.isRunTarget(pkg) || abortRequested) return false
+        if (ui.activePackage() == pkg) return false
+        frontRecoveries++
+        val intent = appCtx.packageManager.getLaunchIntentForPackage(pkg)?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) ?: return false
+        if (runCatching { appCtx.startActivity(intent) }.isFailure) return false
+        RunLog.w(com.noobclaw.mobile.util.tr("目標 App 被切到後台，已切回繼續", "The app went to the background — brought it back"), runId)
+        delay(3000)
+        return ui.activePackage() == pkg
+    }
 
     private suspend fun dispatchLocked(name: String, argJson: String): String {
         val a = runCatching { if (argJson == "null") JSONObject() else JSONObject(argJson) }.getOrElse { JSONObject() }
