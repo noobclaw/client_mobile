@@ -453,8 +453,11 @@ object FloatBall {
      */
     private fun countsLine(c: JSONObject, targets: JSONObject?, task: JSONObject?, withCap: Boolean, sep: String = "  ·  "): String {
         val cfg = task?.optJSONObject("config")
+        // 互動漲粉 / 抖音·小紅書任務沒有 cl_do_* 開關:沒目標就只看做了沒有
+        val engage = task?.optString("script_id").orEmpty().let { it.endsWith("_auto_engage") || (!it.startsWith("tiktok_") && it.isNotEmpty()) }
         fun on(k: String, cfgKey: String): Boolean =
             if (targets != null && targets.has(k)) targets.optLong(k) > 0 || c.optLong(k) > 0
+            else if (engage) c.optLong(k) > 0
             else cfg?.optBoolean(cfgKey, true) ?: true
         fun cap(k: String) = if (withCap) targets?.optLong(k)?.takeIf { it in 1 until 100_000_000 }?.let { "/$it" } ?: "" else ""   // 不限数量 = 不显示 /上限
         val parts = mutableListOf<String>()
