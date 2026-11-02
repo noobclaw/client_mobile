@@ -20,7 +20,7 @@ object Steps {
         fun s(k: String) = a.optString(k).take(60)
         fun n(k: String) = a.optLong(k)
         return when (code) {
-            "open_app" -> tr("打開 TikTok", "Opening TikTok")
+            "open_app" -> tr("打開 App", "Opening the app")
             "account_ok" -> tr("確認帳號", "Account checked")
             "search" -> trf("搜索「{}」", "Searching \"{}\"", s("kw"))
             "open_link" -> tr("打開指定作品", "Opening the chosen video")
@@ -43,8 +43,8 @@ object Steps {
             "done" -> tr("本次運行完成", "Run finished")
             "cap_reached" -> tr("達到本次上限，結束", "Reached this run's limit")
             "time_up" -> tr("到達本次運行時長，結束", "Run time is up")
-            "not_logged_in" -> tr("TikTok 未登錄，已停止", "TikTok isn't logged in — stopped")
-            "verify_stop" -> tr("TikTok 彈出驗證，已自動停止", "TikTok asked for verification — stopped")
+            "not_logged_in" -> tr("App 未登錄，已停止", "The app isn't logged in — stopped")
+            "verify_stop" -> tr("App 彈出驗證，已自動停止", "The app asked for verification — stopped")
             "stopped" -> tr("已停止", "Stopped")
             "stopped_other" -> tr("運行中斷", "Run interrupted")
             else -> null
