@@ -18,8 +18,6 @@ class NcAccessibilityService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
-        // The static config lists TikTok only; 抖音 / 小紅書 are added here at runtime (same allowlist as A11yGuard).
-        runCatching { serviceInfo = serviceInfo.apply { packageNames = A11yGuard.TARGET_PACKAGES.toTypedArray() } }
         RunLog.i(com.noobclaw.mobile.util.tr("無障礙服務已連接", "Accessibility service connected"))
         // 「抓」校準懸浮鈕:默認不顯示,後台功能開關 dev_bubble 給這台手機打開時才有
         applyDevBubble(com.noobclaw.mobile.util.Prefs.flag("dev_bubble"))

@@ -236,7 +236,12 @@ const ctx = Object.freeze({
     private suspend fun recoverFront(): Boolean {
         val pkg = task.optString("target_package")
         if (frontRecoveries >= 20 || pkg.isEmpty() || !A11yGuard.isRunTarget(pkg) || abortRequested) return false
-        if (ui.activePackage() == pkg) return false
+        val front = ui.activePackage()
+        if (front == pkg) return false
+        // the user opened NoobClaw itself (to look at the run or press Stop) or the screen is off: leave them alone
+        if (front == appCtx.packageName) return false
+        val pm = appCtx.getSystemService(android.content.Context.POWER_SERVICE) as? android.os.PowerManager
+        if (pm != null && !pm.isInteractive) return false
         frontRecoveries++
         val intent = appCtx.packageManager.getLaunchIntentForPackage(pkg)?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) ?: return false
         if (runCatching { appCtx.startActivity(intent) }.isFailure) return false

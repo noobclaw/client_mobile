@@ -18,11 +18,9 @@
     <queries>
         <package android:name="com.zhiliaoapp.musically" />
         <package android:name="com.ss.android.ugc.trill" />
-        <!-- 抖音 / 小紅書: seen through their launcher entry (no extra package names in the manifest) -->
-        <intent>
-            <action android:name="android.intent.action.MAIN" />
-            <category android:name="android.intent.category.LAUNCHER" />
-        </intent>
+        <package android:name="com.ss.android.ugc.aweme" />
+        <package android:name="com.ss.android.ugc.aweme.lite" />
+        <package android:name="com.xingin.xhs" />
     </queries>
 
     <application
