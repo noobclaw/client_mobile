@@ -1555,12 +1555,22 @@ class MainActivity : AppCompatActivity() {
                 r.addView(et, LinearLayout.LayoutParams(ui.dp(76), ViewGroup.LayoutParams.WRAP_CONTENT))
                 box.addView(r, ui.lp(bottom = 14))
             }
-            numRow(tr("👍 本次點讚目標", "👍 Like target this run"), tr("每個潛客都點(最多 2 條作品);不夠這個數會回評論區給潛客的留言補讚 · 0 = 不點讚", "Every lead is liked (up to 2 posts); short of this, the run likes their comments · 0 = off"), "_lLike")
+            numRow(tr("👍 本次點讚目標", "👍 Like target this run"), when (plat) {
+                "douyin" -> tr("每個新潛客點他第一條作品 · 0 = 不點讚", "Likes each new lead's first post · 0 = off")
+                "xhs" -> tr("每個新潛客做一個動作(按讚 / 關注 / 評論剩餘比例輪流) · 0 = 不點讚", "One action per new lead (like / follow / comment by what is left) · 0 = off")
+                else -> tr("每個潛客都點(最多 2 條作品);不夠這個數會回評論區給潛客的留言補讚 · 0 = 不點讚", "Every lead is liked (up to 2 posts); short of this, the run likes their comments · 0 = off")
+            }, "_lLike")
             numRow(tr("👤 本次關注最大數量", "👤 Total follows this run"), tr("還有額度就關注 · 0 = 不關注 · 最多 100", "Follows while the total lasts · 0 = off · max 100"), "_lFollow")
             numRow(tr("💬 本次評論最大數量", "💬 Total comments this run"), tr("還有額度就在他第一條作品下評論一條 · 0 = 不評論 · 最多 100", "Comments on their first post while the total lasts · 0 = off · max 100"), "_lComment")
             add(box)
-            add(ui.sub(tr("採集不設上限:評論區的人全部收(收過的不重複收),每收滿 100 人先互動這一批再接著收。只互動這次收到的人,每人一次:有關注額度就關注、點他第一條作品和下一條的讚、有評論額度就評論;私密號 / 沒作品的跳過。",
-                "No cap on collecting; every 100 leads the run engages that batch, then goes on. Only this run's leads, once each: follow while the total lasts, like their first post and the next, comment while the total lasts; private / empty accounts are skipped.")), bottom = 20)
+            add(ui.sub(when (plat) {
+                "douyin" -> tr("採集不設上限:逐個打開評論區的人讀抖音號(收過的不重複收),新潛客當場觸達一次:有關注額度就關注、點他第一條作品的讚、有評論額度就評論;私密號 / 沒作品的跳過。",
+                    "No cap on collecting: each commenter's profile is opened to read their Douyin ID (no repeats); a new lead is engaged right there, once: follow while the total lasts, like their first post, comment while the total lasts; private / empty accounts are skipped.")
+                "xhs" -> tr("採集不設上限:逐個打開筆記評論區的人讀小紅書號(收過的不重複收),新潛客當場做一個動作(點讚 / 關注 / 評論),所有總數用完就停;私密號 / 沒筆記的跳過。",
+                    "No cap on collecting: each commenter's profile is opened to read their RedNote ID (no repeats); a new lead gets one action right there (like / follow / comment) until every total is used; private / empty accounts are skipped.")
+                else -> tr("採集不設上限:評論區的人全部收(收過的不重複收),每收滿 100 人先互動這一批再接著收。只互動這次收到的人,每人一次:有關注額度就關注、點他第一條作品和下一條的讚、有評論額度就評論;私密號 / 沒作品的跳過。",
+                    "No cap on collecting; every 100 leads the run engages that batch, then goes on. Only this run's leads, once each: follow while the total lasts, like their first post and the next, comment while the total lasts; private / empty accounts are skipped.")
+            }), bottom = 20)
             if (leadCmtOn) drawCmt(true)
         }
 
