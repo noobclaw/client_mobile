@@ -211,8 +211,11 @@ object FloatBall {
     private fun attachDrag(v: View) {
         val slop = ViewConfiguration.get(v.context).scaledTouchSlop
         var downX = 0f; var downY = 0f; var startY = 0; var dragging = false
+        // 整个触摸处理都包在 runCatching 里:任何异常都不往框架里抛 —— 否则会崩掉 App 进程,
+        // 连带把同进程的无障碍服务一起弄停(用户反馈:拖拽后悬浮球消失 + 无障碍被影响)。
         v.setOnTouchListener { _, e ->
-            val lp = barLp ?: return@setOnTouchListener false
+            runCatching {
+            val lp = barLp ?: return@runCatching false
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> { downX = e.rawX; downY = e.rawY; startY = lp.y; dragging = false; true }
                 MotionEvent.ACTION_MOVE -> {
@@ -225,7 +228,7 @@ object FloatBall {
                         lp.gravity = Gravity.TOP or Gravity.START
                         lp.x = (e.rawX - dp(TAB_W / 2)).toInt().coerceIn(0, screenW - dp(TAB_W))
                         lp.y = (startY + (e.rawY - downY)).toInt().coerceIn(0, screenH - dp(60))
-                        runCatching { wm?.updateViewLayout(bar, lp) }
+                        relayout(lp)
                     }
                     true
                 }
@@ -235,8 +238,10 @@ object FloatBall {
                         right = e.rawX > screenW / 2f
                         lp.gravity = Gravity.TOP or (if (right) Gravity.END else Gravity.START)
                         lp.x = EDGE()
+                        // y 夹到可见范围内,避免贴边后落到屏幕外看不见
+                        lp.y = lp.y.coerceIn(0, (screenH - dp(TAB_H) - dp(8)).coerceAtLeast(0))
                         arrangeRow()
-                        runCatching { wm?.updateViewLayout(bar, lp) }
+                        relayout(lp)
                         prefs()?.edit()?.putBoolean("fb3_right", right)?.putInt("fb3_y", lp.y)?.apply()
                     } else if (e.actionMasked == MotionEvent.ACTION_UP) {
                         // 測試版:按住 2 秒不動 = 抓取當前畫面結構(用來校準抖音 / 小紅書 / TikTok 的按鈕),正式版沒有
@@ -249,7 +254,16 @@ object FloatBall {
                 }
                 else -> false
             }
+            }.getOrElse { RunLog.w("懸浮球觸摸異常：${it.message}"); true }
         }
+    }
+
+    /** Move the ball; if the window got detached somehow, re-add it so it never vanishes. */
+    private fun relayout(lp: WindowManager.LayoutParams) {
+        val b = bar ?: return
+        if (runCatching { wm?.updateViewLayout(b, lp) }.isSuccess) return
+        runCatching { wm?.removeView(b) }
+        if (runCatching { wm?.addView(b, lp) }.isFailure) RunLog.w("懸浮球重建失敗")
     }
 
     private fun refresh() {
@@ -273,7 +287,7 @@ object FloatBall {
             val lp = RunService.liveProgress()
             val c = lp?.optJSONObject("counts") ?: JSONObject()
             // 检测账号不是任务:不显示点赞数 / 计时,只提示正在读账号
-            p.text = if (RunService.runningTaskId == "detect") tr("正在讀取帳號…", "Reading the account…")
+            p.text = if (RunService.runningTaskId == "detect") tr("正在檢查帳號是否登入…", "Checking whether the account is logged in…")
                 else withNow(countsLine(c, lp?.optJSONObject("targets"), taskById(RunService.runningTaskId), withCap = false, sep = "  ") + " · ${elapsed()}",
                     nowLine(lp))
             p.visibility = View.VISIBLE
