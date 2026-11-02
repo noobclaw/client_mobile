@@ -266,7 +266,7 @@ object FloatBall {
             b.alpha = if (run) 1f else 0.8f
             // 运行结束:正式任务自动弹出这次的结果;检测账号不弹(RunService 自己提示并回到 App)
             if (run && (popupKind == "last" || popupKind == "menu")) closePopup()   // 新的运行开始了:上一次的结果卡片 / 旧菜单收起来
-            if (!run) { if (runWasDetect) { if (popupKind == "progress") closePopup() } else if (popupKind != "pick" && Prefs.runHistory().firstOrNull()?.optString("run_id") == lastRunId) openLast() else if (popupKind == "progress") closePopup() }   // run ended while the card was open → show its result
+            if (!run) { if (runWasDetect) { if (popupKind == "progress") closePopup() } else if (popupKind != "pick" && Prefs.runHistory().firstOrNull()?.let { it.optString("run_id") == lastRunId && !Prefs.isHiddenTask(it.optString("task_id")) } == true) openLast() else if (popupKind == "progress") closePopup() }   // run ended while the card was open → show its result
         }
         val p = pill ?: return
         if (run && popupKind != "menu") {
@@ -473,6 +473,7 @@ object FloatBall {
 
     private fun taskTitle(t: JSONObject?): String {
         if (t == null) return "TikTok"
+        if (Prefs.platformOf(t) in Prefs.hiddenPlatforms) return tr("任務", "Task")   // 合規下架:不顯示平台和任務名"
         val p = platformName(Prefs.platformOf(t))
         val n = t.optString("name").trim()
         val name = when {
@@ -520,7 +521,7 @@ object FloatBall {
 
     private fun openLast() {
         val col = card("last") ?: return
-        val r = Prefs.runHistory().firstOrNull()
+        val r = Prefs.runHistory().firstOrNull { !Prefs.isHiddenTask(it.optString("task_id")) }
         if (r == null) {
             header(col, tr("上次結果", "Last run"), "", Color.WHITE)
             col.addView(txt(tr("還沒有運行記錄", "No runs yet"), 12f, Color.parseColor("#9A9AB3")))

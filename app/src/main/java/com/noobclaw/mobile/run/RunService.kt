@@ -264,7 +264,7 @@ class RunService : Service() {
             // 冷卻 / 合規隱藏 只看這個任務的平台(抖音出驗證不影響 TikTok)
             val taskPf = Prefs.platformOf(task)
             if (System.currentTimeMillis() < Prefs.cooldownFor(taskPf)) { report.put("status", "skipped").put("reason", "cooldown"); RunLog.w(tr("跳過運行：", "Skipped: ") + "cooldown", runId); return }
-            if (synthetic == null && taskPf in Prefs.hiddenPlatforms) { report.put("status", "skipped").put("reason", "platform_hidden"); RunLog.w(tr("跳過運行：", "Skipped: ") + "platform_hidden", runId); return }
+            // 合規下架的平台:已有任務照常運行(只是界面上看不到),2026-11-02 產品要求
             runningTaskId = task.optString("id")
             runningRunId = runId
             runStartedAt = started

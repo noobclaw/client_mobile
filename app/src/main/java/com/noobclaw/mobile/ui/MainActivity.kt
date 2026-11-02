@@ -921,11 +921,11 @@ class MainActivity : AppCompatActivity() {
     private fun runPanel(): View {
         val t = taskById(RunService.runningTaskId)
         val sid = t?.optString("script_id") ?: CL
-        val name = if (RunService.runningTaskId == "detect") tr("檢測賬號", "Detecting account") else t?.let { taskName(it) } ?: scriptTitle(sid)
+        val name = if (RunService.runningTaskId == "detect") tr("檢測賬號", "Detecting account") else if (Prefs.isHiddenTask(RunService.runningTaskId)) tr("任務", "Task") else t?.let { taskName(it) } ?: scriptTitle(sid)
         val p = ui.panel()
         val head = ui.col().apply { background = ui.shape(ui.alpha(C.ACCENT, 18), 10, ui.alpha(C.ACCENT, 90)) }
         val mq = TextView(this).apply {
-            text = "●  " + tr("正在運行", "Running") + " " + platformName(t?.let { platformOf(it) } ?: "tiktok") + " · " + name + "          "
+            text = "●  " + tr("正在運行", "Running") + (if (Prefs.isHiddenTask(RunService.runningTaskId)) "" else " " + platformName(t?.let { platformOf(it) } ?: "tiktok")) + " · " + name + "          "
             textSize = 13f; setTextColor(C.ACCENT); typeface = android.graphics.Typeface.DEFAULT_BOLD
             isSingleLine = true; ellipsize = TextUtils.TruncateAt.MARQUEE; marqueeRepeatLimit = -1
             isFocusable = true; isFocusableInTouchMode = true; isSelected = true; isHorizontalFadingEdgeEnabled = true
@@ -937,7 +937,7 @@ class MainActivity : AppCompatActivity() {
         p.addView(head, ui.lp().apply { setMargins(ui.dp(8), ui.dp(8), ui.dp(8), 0) })
         val body = ui.col().apply { setPadding(ui.dp(12), ui.dp(10), ui.dp(12), ui.dp(12)) }
         // 運行中的那個任務的平台帳號(不是當前標籤頁的)
-        accountRow(platform = taskById(RunService.runningTaskId)?.let { platformOf(it) } ?: currentTab())
+        (if (Prefs.isHiddenTask(RunService.runningTaskId)) null else accountRow(platform = taskById(RunService.runningTaskId)?.let { platformOf(it) } ?: currentTab()))
             ?.let { body.addView(it, ui.lp(bottom = 8)); body.addView(ui.divider(), ui.lp(h = 1, bottom = 8)) }
         body.addView(stepList(RunService.runningRunId, 6, true), ui.lp(bottom = 12))
         val r = ui.row().apply { gravity = Gravity.CENTER }
@@ -1820,7 +1820,9 @@ class MainActivity : AppCompatActivity() {
     // ---------- logs ----------
     private fun renderLogs() {
         topBar(tr("運行記錄", "Run log")) { go(Screen.ME) }
-        val lines = RunLog.recent().takeLast(200).reversed().mapNotNull { l ->
+        // 合規下架平台的運行記錄不顯示(任務照跑)
+        val hiddenRuns = Prefs.hiddenRunIds() + listOfNotNull(RunService.runningRunId.takeIf { Prefs.isHiddenTask(RunService.runningTaskId) })
+        val lines = RunLog.recent().takeLast(200).filter { it.runId == null || it.runId !in hiddenRuns }.reversed().mapNotNull { l ->
             if (l.level == "step") Steps.text(l.msg)?.let { l to it } else l to l.msg
         }
         if (lines.isEmpty()) { add(ui.sub(tr("暫無記錄", "Nothing yet"))); return }

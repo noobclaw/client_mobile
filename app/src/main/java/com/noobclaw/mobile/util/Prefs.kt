@@ -158,6 +158,10 @@ object Prefs {
         runCatching { org.json.JSONObject(sp.getString(K_STATS, "{}") ?: "{}").optJSONObject(taskId) }.getOrNull()
 
     /** Recent run reports (newest first, at most 30): {run_id, task_id, status, reason, dry_run, counts, credits, started_at, duration_ms}. */
+    /** Compliance (2026-11-02): tasks / runs of hidden platforms keep running but are never shown. */
+    fun isHiddenTask(taskId: String?): Boolean = taskId != null && hiddenPlatforms.isNotEmpty() &&
+        tasks().firstOrNull { it.optString("id") == taskId }?.let { platformOf(it) in hiddenPlatforms } == true
+    fun hiddenRunIds(): Set<String> = if (hiddenPlatforms.isEmpty()) emptySet() else runHistory().filter { isHiddenTask(it.optString("task_id")) }.map { it.optString("run_id") }.toSet()
     fun runHistory(): List<org.json.JSONObject> = runCatching {
         val a = org.json.JSONArray(sp.getString(K_RUNS, "[]") ?: "[]"); (0 until a.length()).mapNotNull { a.optJSONObject(it) }
     }.getOrDefault(emptyList())
